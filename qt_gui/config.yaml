@@ -1,6 +1,6 @@
 base:
-  alternative_bold_font: F:\A_none_huawei\Photograph\Tools\semi-utils\qt_gui\fonts\Roboto-Medium.ttf
-  alternative_font: F:\A_none_huawei\Photograph\Tools\semi-utils\qt_gui\fonts\Roboto-Regular.ttf
+  alternative_bold_font: F:\A_none_huawei\Photograph\Tools\semi-utils\qt_gui\fonts\AlibabaPuHuiTi-2-85-Bold.otf
+  alternative_font: F:\A_none_huawei\Photograph\Tools\semi-utils\qt_gui\fonts\AlibabaPuHuiTi-2-45-Light.otf
   bold_font: F:\A_none_huawei\Photograph\Tools\semi-utils\qt_gui\fonts\AlibabaPuHuiTi-2-85-Bold.otf
   bold_font_size: 1
   font: F:\A_none_huawei\Photograph\Tools\semi-utils\qt_gui\fonts\AlibabaPuHuiTi-2-45-Light.otf
@@ -32,8 +32,8 @@ layout:
     right_bottom:
       color: '#757575'
       is_bold: false
-      name: Datetime
-      value: Photo by NONE
+      name: Photographer
+      value: ''
     right_top:
       color: '#212121'
       is_bold: true

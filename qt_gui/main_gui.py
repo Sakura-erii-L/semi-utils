@@ -52,17 +52,17 @@ from PySide6.QtWidgets import QTextEdit
 from PySide6.QtWidgets import QVBoxLayout
 from PySide6.QtWidgets import QWidget
 
-from qt_gui.semi_bridge import apply_runtime_config_from_values
-from qt_gui.semi_bridge import build_preview_images
-from qt_gui.semi_bridge import generate_video_with_logs
-from qt_gui.semi_bridge import get_default_logo_options
-from qt_gui.semi_bridge import get_image_exif_preview
-from qt_gui.semi_bridge import get_element_options
-from qt_gui.semi_bridge import get_layout_options
-from qt_gui.semi_bridge import get_runtime_config_snapshot
-from qt_gui.semi_bridge import get_source_file_list
-from qt_gui.semi_bridge import normalize_source_files
-from qt_gui.semi_bridge import process_images
+from semi_bridge import apply_runtime_config_from_values
+from semi_bridge import build_preview_image_with_exif
+from semi_bridge import generate_video_with_logs
+from semi_bridge import get_default_logo_options
+from semi_bridge import get_element_options
+from semi_bridge import get_font_options
+from semi_bridge import get_layout_options
+from semi_bridge import get_runtime_config_snapshot
+from semi_bridge import get_source_file_list
+from semi_bridge import normalize_source_files
+from semi_bridge import process_images
 
 LOCATION_LABELS = {
     "left_top": "左上角",
@@ -109,6 +109,26 @@ class ImagePreviewLabel(QLabel):
         )
         self.setText("")
         self.setPixmap(scaled)
+
+
+class NoWheelComboBox(QComboBox):
+    """仅在聚焦时响应滚轮，避免页面滚动时误改选项。"""
+
+    def wheelEvent(self, event) -> None:  # noqa: N802
+        if self.hasFocus() or self.view().isVisible():
+            super().wheelEvent(event)
+            return
+        event.ignore()
+
+
+class NoWheelSpinBox(QSpinBox):
+    """仅在聚焦时响应滚轮，避免页面滚动时误改数值。"""
+
+    def wheelEvent(self, event) -> None:  # noqa: N802
+        if self.hasFocus():
+            super().wheelEvent(event)
+            return
+        event.ignore()
 
 
 class ProcessWorker(QObject):
@@ -177,7 +197,31 @@ class VideoWorker(QObject):
             self.crashed.emit(str(exc))
 
 
+class PreviewWorker(QObject):
+    """实时预览线程工作对象。"""
+
+    rendered = Signal(int, str, object, object, str)
+    failed = Signal(int, str)
+
+    @Slot(int, str, object)
+    def render_preview(self, request_id: int, preview_source: str, settings: object) -> None:
+        after_image = None
+        try:
+            render_settings = settings if isinstance(settings, dict) else {}
+            after_image, exif_preview, message = build_preview_image_with_exif(preview_source, render_settings)
+            self.rendered.emit(request_id, preview_source, after_image, exif_preview, message)
+        except Exception as exc:
+            if after_image is not None:
+                try:
+                    after_image.close()
+                except Exception:
+                    pass
+            self.failed.emit(request_id, str(exc))
+
+
 class MainWindow(QMainWindow):
+    preview_request = Signal(int, str, object)
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Semi-Utils Qt 图形界面")
@@ -193,13 +237,21 @@ class MainWindow(QMainWindow):
         self.processing_worker: ProcessWorker | None = None
         self.video_thread: QThread | None = None
         self.video_worker: VideoWorker | None = None
+        self.preview_thread: QThread | None = None
+        self.preview_worker: PreviewWorker | None = None
         self.realtime_preview_paused = False
         self.preview_busy = False
         self.preview_pending = False
+        self.preview_request_id = 0
+        self.preview_latest_request_id = 0
+        self.preview_pending_source: Path | None = None
+        self.preview_pending_settings: dict | None = None
 
         self.preview_timer = QTimer(self)
         self.preview_timer.setSingleShot(True)
         self.preview_timer.timeout.connect(self._refresh_preview_now)
+
+        self._setup_preview_thread()
 
         self.element_controls: dict[str, dict[str, QWidget]] = {}
         self.element_exif_labels: dict[str, QLabel] = {}
@@ -210,6 +262,35 @@ class MainWindow(QMainWindow):
         self._apply_styles()
         self._bind_events()
         self._load_config_to_form()
+
+    def _setup_preview_thread(self) -> None:
+        if self.preview_thread is not None:
+            return
+
+        self.preview_thread = QThread(self)
+        self.preview_worker = PreviewWorker()
+        self.preview_worker.moveToThread(self.preview_thread)
+
+        self.preview_request.connect(self.preview_worker.render_preview)
+        self.preview_worker.rendered.connect(self._on_preview_rendered)
+        self.preview_worker.failed.connect(self._on_preview_failed)
+
+        self.preview_thread.finished.connect(self.preview_worker.deleteLater)
+        self.preview_thread.start()
+
+    def _teardown_preview_thread(self) -> None:
+        self.preview_timer.stop()
+        self.preview_pending = False
+        self.preview_pending_source = None
+        self.preview_pending_settings = None
+        self.preview_latest_request_id += 1
+
+        if self.preview_thread is not None:
+            self.preview_thread.quit()
+            self.preview_thread.wait()
+            self.preview_thread.deleteLater()
+            self.preview_thread = None
+        self.preview_worker = None
 
     def _build_ui(self) -> None:
         central = QWidget()
@@ -224,8 +305,6 @@ class MainWindow(QMainWindow):
         title = QLabel("Semi-Utils 图像处理工作台")
         title.setObjectName("TitleText")
         title.setFont(QFont("Microsoft YaHei UI", 18, QFont.Weight.Bold))
-        subtitle = QLabel("同一界面完成配置、批处理、视频生成与结果追踪")
-        subtitle.setObjectName("SubtitleText")
 
         project_info = QLabel(
             "基于开源项目：<a href=\"https://github.com/leslievan/semi-utils\">"
@@ -238,7 +317,6 @@ class MainWindow(QMainWindow):
         integrator_info.setObjectName("HeaderMetaText")
 
         header_layout.addWidget(title)
-        header_layout.addWidget(subtitle)
         header_layout.addWidget(project_info)
         header_layout.addWidget(integrator_info)
 
@@ -304,7 +382,7 @@ class MainWindow(QMainWindow):
         form = QFormLayout(video_group)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
 
-        self.video_gap_spin = QSpinBox()
+        self.video_gap_spin = NoWheelSpinBox()
         self.video_gap_spin.setRange(1, 20)
         self.video_gap_spin.setValue(2)
         self.video_gap_spin.setSuffix(" 秒")
@@ -391,12 +469,27 @@ class MainWindow(QMainWindow):
         output_row.addWidget(self.output_dir_edit)
         output_row.addWidget(self.output_browse_btn)
 
-        self.quality_spin = QSpinBox()
+        self.quality_spin = NoWheelSpinBox()
         self.quality_spin.setRange(1, 100)
+
+        self.font_combo = NoWheelComboBox()
+        self.bold_font_combo = NoWheelComboBox()
+        self.font_browse_btn = QPushButton("浏览字体")
+        self.bold_font_browse_btn = QPushButton("浏览字体")
+
+        font_row = QHBoxLayout()
+        font_row.addWidget(self.font_combo)
+        font_row.addWidget(self.font_browse_btn)
+
+        bold_font_row = QHBoxLayout()
+        bold_font_row.addWidget(self.bold_font_combo)
+        bold_font_row.addWidget(self.bold_font_browse_btn)
 
         form.addRow("输入目录", self._wrap_layout(input_wrap))
         form.addRow("输出目录", self._wrap_layout(output_row))
         form.addRow("输出质量", self.quality_spin)
+        form.addRow("常规字体", self._wrap_layout(font_row))
+        form.addRow("粗体字体", self._wrap_layout(bold_font_row))
 
         return group
 
@@ -404,9 +497,9 @@ class MainWindow(QMainWindow):
         group = QGroupBox("布局与 Logo")
         form = QFormLayout(group)
 
-        self.layout_combo = QComboBox()
+        self.layout_combo = NoWheelComboBox()
         self.logo_enable_check = QCheckBox("启用 Logo")
-        self.default_logo_combo = QComboBox()
+        self.default_logo_combo = NoWheelComboBox()
         self.logo_exif_info = QLabel("EXIF：等待加载预览图")
         self.logo_exif_info.setObjectName("ExifInfoText")
         self.logo_exif_info.setWordWrap(True)
@@ -424,7 +517,7 @@ class MainWindow(QMainWindow):
         for location_key, location_name in LOCATION_LABELS.items():
             row = QHBoxLayout()
 
-            combo = QComboBox()
+            combo = NoWheelComboBox()
             custom_edit = QLineEdit()
             custom_edit.setPlaceholderText("当选择“自定义”时，在此输入自定义文字")
             custom_edit.setEnabled(False)
@@ -698,6 +791,8 @@ class MainWindow(QMainWindow):
         self.input_files_btn.clicked.connect(self._browse_input_files)
         self.clear_files_btn.clicked.connect(self._clear_input_files)
         self.output_browse_btn.clicked.connect(self._browse_output_dir)
+        self.font_browse_btn.clicked.connect(lambda: self._browse_font_file_for_combo(self.font_combo))
+        self.bold_font_browse_btn.clicked.connect(lambda: self._browse_font_file_for_combo(self.bold_font_combo))
 
         self.save_btn.clicked.connect(self._save_config)
         self.run_btn.clicked.connect(self._start_processing)
@@ -708,6 +803,8 @@ class MainWindow(QMainWindow):
         self.input_dir_edit.textChanged.connect(self._on_input_dir_text_changed)
         self.output_dir_edit.textChanged.connect(self._schedule_realtime_preview)
         self.quality_spin.valueChanged.connect(self._schedule_realtime_preview)
+        self.font_combo.currentIndexChanged.connect(self._schedule_realtime_preview)
+        self.bold_font_combo.currentIndexChanged.connect(self._schedule_realtime_preview)
         self.layout_combo.currentIndexChanged.connect(self._schedule_realtime_preview)
         self.logo_enable_check.stateChanged.connect(self._schedule_realtime_preview)
         self.default_logo_combo.currentIndexChanged.connect(self._schedule_realtime_preview)
@@ -730,6 +827,8 @@ class MainWindow(QMainWindow):
         self.input_dir_edit.setText(state["input_dir"])
         self.output_dir_edit.setText(state["output_dir"])
         self.quality_spin.setValue(state["quality"])
+        self._set_combo_by_data(self.font_combo, state.get("font_path", ""))
+        self._set_combo_by_data(self.bold_font_combo, state.get("bold_font_path", ""))
 
         self._set_combo_by_data(self.layout_combo, state["layout_type"])
         self.logo_enable_check.setChecked(state["logo_enable"])
@@ -761,7 +860,13 @@ class MainWindow(QMainWindow):
 
         self.default_logo_combo.clear()
         for display_name, path in get_default_logo_options():
-            self.default_logo_combo.addItem(f"{display_name} ({path})", path)
+            self.default_logo_combo.addItem(display_name, path)
+
+        self.font_combo.clear()
+        self.bold_font_combo.clear()
+        for display_name, path in get_font_options():
+            self.font_combo.addItem(display_name, path)
+            self.bold_font_combo.addItem(display_name, path)
 
         element_options = get_element_options()
         for controls in self.element_controls.values():
@@ -784,6 +889,8 @@ class MainWindow(QMainWindow):
             "input_dir": self.input_dir_edit.text().strip(),
             "output_dir": self.output_dir_edit.text().strip(),
             "quality": int(self.quality_spin.value()),
+            "font_path": self.font_combo.currentData(),
+            "bold_font_path": self.bold_font_combo.currentData(),
             "source_files": self.selected_source_files.copy(),
             "layout_type": self.layout_combo.currentData(),
             "logo_enable": self.logo_enable_check.isChecked(),
@@ -1011,6 +1118,31 @@ class MainWindow(QMainWindow):
         if selected:
             self.output_dir_edit.setText(selected)
 
+    def _browse_font_file_for_combo(self, combo: QComboBox) -> None:
+        current_value = str(combo.currentData() or "").strip()
+        default_dir = str(QT_GUI_ROOT.joinpath("fonts"))
+        if current_value:
+            current_path = Path(current_value)
+            if current_path.exists() and current_path.parent.exists():
+                default_dir = str(current_path.parent)
+
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择字体文件",
+            default_dir,
+            "Font Files (*.ttf *.otf *.ttc *.otc)",
+        )
+        if not selected:
+            return
+
+        selected_path = str(Path(selected).resolve())
+        idx = combo.findData(selected_path)
+        if idx < 0:
+            combo.addItem(Path(selected_path).name, selected_path)
+            idx = combo.findData(selected_path)
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+
     def _on_input_dir_text_changed(self, text: str) -> None:
         if not self.selected_source_files:
             self._refresh_preview_source_from_input_dir(text.strip())
@@ -1023,6 +1155,11 @@ class MainWindow(QMainWindow):
     def _set_realtime_preview_paused(self, paused: bool, reason: str | None = None) -> None:
         self.realtime_preview_paused = paused
         if paused:
+            self.preview_timer.stop()
+            self.preview_pending = False
+            self.preview_pending_source = None
+            self.preview_pending_settings = None
+            self.preview_latest_request_id += 1
             self.preview_status_label.setText(f"状态：{reason or '实时预览已暂停'}")
             return
         self.preview_status_label.setText("状态：任务结束，正在刷新实时预览...")
@@ -1038,49 +1175,110 @@ class MainWindow(QMainWindow):
             return
         if self.processing_thread is not None or self.video_thread is not None:
             return
-        if self.preview_busy:
-            self.preview_pending = True
-            return
 
         preview_source = self._resolve_preview_source_path()
         if preview_source is None:
+            self.preview_latest_request_id += 1
+            self.preview_pending = False
+            self.preview_pending_source = None
+            self.preview_pending_settings = None
             self.after_preview_label.set_preview_pixmap(None)
             self.preview_meta_label.setText("预览区：未找到可用图片，无法生成实时预览。")
             self.preview_status_label.setText("状态：请先选择输入目录或图片")
             self._clear_exif_info_panels()
             return
 
-        self.preview_busy = True
-        before_image = None
-        after_image = None
-        try:
-            settings = self._collect_form_settings()
-            before_image, after_image, _message = build_preview_images(preview_source, settings)
-            exif_preview = get_image_exif_preview(preview_source, settings)
+        settings = self._collect_form_settings()
+        if self.preview_busy:
+            self.preview_pending = True
+            self.preview_pending_source = preview_source
+            self.preview_pending_settings = settings
+            self.preview_status_label.setText("状态：正在渲染，稍后刷新最新预览...")
+            return
 
+        self._dispatch_preview_request(preview_source, settings)
+
+    def _dispatch_preview_request(self, preview_source: Path, settings: dict) -> None:
+        if self.preview_worker is None or self.preview_thread is None:
+            self._setup_preview_thread()
+        if self.preview_worker is None:
+            return
+
+        self.preview_request_id += 1
+        request_id = self.preview_request_id
+        self.preview_latest_request_id = request_id
+        self.preview_busy = True
+        self.preview_status_label.setText("状态：正在渲染实时预览...")
+        self.preview_request.emit(request_id, str(preview_source), settings)
+
+    def _dispatch_pending_preview_if_needed(self) -> None:
+        if not self.preview_pending:
+            return
+        if self.realtime_preview_paused:
+            self.preview_pending = False
+            self.preview_pending_source = None
+            self.preview_pending_settings = None
+            return
+        if self.processing_thread is not None or self.video_thread is not None:
+            return
+        if self.preview_pending_source is None or self.preview_pending_settings is None:
+            self.preview_pending = False
+            return
+
+        pending_source = self.preview_pending_source
+        pending_settings = self.preview_pending_settings
+        self.preview_pending = False
+        self.preview_pending_source = None
+        self.preview_pending_settings = None
+        self._dispatch_preview_request(pending_source, pending_settings)
+
+    def _on_preview_rendered(
+        self,
+        request_id: int,
+        preview_source: str,
+        after_image,
+        exif_preview,
+        _message: str,
+    ) -> None:
+        try:
+            if request_id != self.preview_latest_request_id:
+                return
+
+            source_path = Path(preview_source)
             after_pixmap = self._pil_to_qpixmap(after_image)
 
             self.after_preview_label.set_preview_pixmap(after_pixmap)
-            self.preview_path_label.setText(str(preview_source))
+            self.preview_path_label.setText(str(source_path))
             self.preview_meta_label.setText(
-                f"预览图：{preview_source.name} | 预览尺寸：{after_image.width}x{after_image.height}"
+                f"预览图：{source_path.name} | 预览尺寸：{after_image.width}x{after_image.height}"
             )
-            self._update_exif_info_panels(exif_preview)
+
+            preview_exif = exif_preview if isinstance(exif_preview, dict) else {}
+            self._update_exif_info_panels(preview_exif)
+            self._auto_select_logo_from_exif(preview_exif)
             self.preview_status_label.setText("状态：实时预览已更新")
         except Exception as exc:
-            self.preview_status_label.setText(f"状态：实时预览失败：{exc}")
-            self._append_log(f"实时预览失败：{exc}")
-            self._clear_exif_info_panels()
+            if request_id == self.preview_latest_request_id:
+                self.preview_status_label.setText(f"状态：实时预览失败：{exc}")
+                self._append_log(f"实时预览失败：{exc}")
+                self._clear_exif_info_panels()
         finally:
-            if before_image is not None:
-                before_image.close()
             if after_image is not None:
-                after_image.close()
+                try:
+                    after_image.close()
+                except Exception:
+                    pass
             self.preview_busy = False
+            self._dispatch_pending_preview_if_needed()
 
-        if self.preview_pending:
-            self.preview_pending = False
-            self.preview_timer.start(120)
+    def _on_preview_failed(self, request_id: int, message: str) -> None:
+        if request_id == self.preview_latest_request_id:
+            self.preview_status_label.setText(f"状态：实时预览失败：{message}")
+            self._append_log(f"实时预览失败：{message}")
+            self._clear_exif_info_panels()
+
+        self.preview_busy = False
+        self._dispatch_pending_preview_if_needed()
 
     def _toggle_custom_input(self, location_key: str) -> None:
         controls = self.element_controls[location_key]
@@ -1088,7 +1286,8 @@ class MainWindow(QMainWindow):
         custom_edit: QLineEdit = controls["custom"]  # type: ignore[assignment]
         is_custom = combo.currentData() == "Custom"
         custom_edit.setEnabled(is_custom)
-        if not is_custom and custom_edit.text().strip() == "":
+        if not is_custom:
+            # 退出“自定义”时清空文本，恢复占位提示文案显示。
             custom_edit.clear()
 
     def _set_combo_by_data(self, combo: QComboBox, value: str) -> None:
@@ -1150,15 +1349,7 @@ class MainWindow(QMainWindow):
         self._update_input_source_hint()
 
     def _resolve_preview_source_path(self) -> Path | None:
-        if self.selected_source_files:
-            current = Path(self.selected_source_files[0])
-            if current.exists() and current.is_file():
-                self.current_preview_source = current
-                return current
-
-        if self.current_preview_source is not None and self.current_preview_source.exists() and self.current_preview_source.is_file():
-            return self.current_preview_source
-
+        # 预览区固定使用 qt_gui/example.jpg，不随输入目录或选图变化。
         if PREVIEW_IMAGE_PATH.exists() and PREVIEW_IMAGE_PATH.is_file():
             return PREVIEW_IMAGE_PATH
         return None
@@ -1171,15 +1362,43 @@ class MainWindow(QMainWindow):
         self.input_source_hint.setText(f"当前来源：输入目录（预览：{preview_name}）")
 
     def _update_exif_info_panels(self, exif_preview: dict) -> None:
-        self.logo_exif_info.setText(f"EXIF：{exif_preview.get('logo', '--')}")
+        logo_info = exif_preview.get("logo", {}) if isinstance(exif_preview, dict) else {}
+        make = "--"
+        if isinstance(logo_info, dict):
+            make = logo_info.get("make", "--")
+        self.logo_exif_info.setText(f"EXIF：相机厂商={make}")
+
         element_info = exif_preview.get("elements", {})
         for location, label in self.element_exif_labels.items():
             label.setText(f"EXIF：{element_info.get(location, '--')}")
+
+    def _auto_select_logo_from_exif(self, exif_preview: dict) -> None:
+        logo_info = exif_preview.get("logo", {}) if isinstance(exif_preview, dict) else {}
+        if not isinstance(logo_info, dict):
+            return
+
+        matched_logo_path = str(logo_info.get("matched_logo_path", "") or "").strip()
+        if not matched_logo_path:
+            return
+
+        idx = self.default_logo_combo.findData(matched_logo_path)
+        if idx >= 0 and self.default_logo_combo.currentIndex() != idx:
+            self.default_logo_combo.setCurrentIndex(idx)
 
     def _clear_exif_info_panels(self) -> None:
         self.logo_exif_info.setText("EXIF：等待加载预览图")
         for label in self.element_exif_labels.values():
             label.setText("EXIF：等待加载预览图")
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        # 关闭窗口时自动保存当前界面配置，便于下次启动直接沿用。
+        self._set_realtime_preview_paused(True, "窗口关闭中，实时预览已停止")
+        self._teardown_preview_thread()
+        try:
+            apply_runtime_config_from_values(self._collect_form_settings(), save=True)
+        except Exception as exc:
+            self._append_log(f"关闭时自动保存配置失败：{exc}")
+        super().closeEvent(event)
 
 
 def main() -> None:

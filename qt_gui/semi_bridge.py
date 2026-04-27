@@ -44,7 +44,17 @@ def get_layout_options() -> list[tuple[str, str]]:
 
 
 def get_element_options() -> list[tuple[str, str]]:
-    return [(item.name, item.value) for item in ITEM_LIST]
+    options: list[tuple[str, str]] = []
+    for item in ITEM_LIST:
+        display_name = str(getattr(item, "name", "") or "")
+        value = str(getattr(item, "value", "") or "")
+        # 原始 ITEM_LIST 中存在仅空格的占位项，这里移除。
+        if not display_name.strip():
+            continue
+        options.append((display_name, value))
+
+    options.append(("拍摄者", "Photographer"))
+    return options
 
 
 def get_default_logo_options() -> list[tuple[str, str]]:
@@ -52,6 +62,34 @@ def get_default_logo_options() -> list[tuple[str, str]]:
     for make_key, make_config in config.get_data().get("logo", {}).get("makes", {}).items():
         label = make_config.get("id") or make_key
         options.append((label, make_config.get("path", "")))
+    return options
+
+
+def get_font_options() -> list[tuple[str, str]]:
+    """返回可选字体列表，优先扫描 qt_gui/fonts，并补充当前配置中的字体路径。"""
+    fonts_dir = Path(__file__).resolve().parent.joinpath("fonts")
+    options: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    allowed_suffixes = {".ttf", ".otf", ".ttc", ".otc"}
+
+    if fonts_dir.exists() and fonts_dir.is_dir():
+        for font_file in sorted(fonts_dir.iterdir(), key=lambda item: item.name.lower()):
+            if not font_file.is_file() or font_file.suffix.lower() not in allowed_suffixes:
+                continue
+            key = str(font_file)
+            if key in seen:
+                continue
+            seen.add(key)
+            options.append((font_file.name, key))
+
+    base_data = config.get_data().get("base", {})
+    for key_name in ("font", "bold_font", "alternative_font", "alternative_bold_font"):
+        font_path = str(base_data.get(key_name, "") or "")
+        if not font_path or font_path in seen:
+            continue
+        seen.add(font_path)
+        options.append((Path(font_path).name, font_path))
+
     return options
 
 
@@ -86,6 +124,8 @@ def get_runtime_config_snapshot() -> dict:
         "input_dir": data["base"].get("input_dir", "./input"),
         "output_dir": data["base"].get("output_dir", "./output"),
         "quality": int(data["base"].get("quality", 100)),
+        "font_path": data["base"].get("font", ""),
+        "bold_font_path": data["base"].get("bold_font", ""),
         "layout_type": data["layout"].get("type", "simple"),
         "logo_enable": bool(data["layout"].get("logo_enable", False)),
         "default_logo_path": data["logo"]["default"].get("path", ""),
@@ -117,6 +157,15 @@ def apply_runtime_config_from_values(values: dict, save: bool = True, ensure_out
     base_data["input_dir"] = input_dir
     base_data["output_dir"] = output_dir
     base_data["quality"] = int(values.get("quality", base_data.get("quality", 100)))
+
+    font_path = str(values.get("font_path", base_data.get("font", "")) or "").strip()
+    bold_font_path = str(values.get("bold_font_path", base_data.get("bold_font", "")) or "").strip()
+    if font_path:
+        base_data["font"] = font_path
+        base_data["alternative_font"] = font_path
+    if bold_font_path:
+        base_data["bold_font"] = bold_font_path
+        base_data["alternative_bold_font"] = bold_font_path
 
     if output_dir and ensure_output_dir:
         Path(output_dir).mkdir(parents=True, exist_ok=True)
@@ -208,9 +257,11 @@ def _get_source_file_list(input_dir: str) -> list[Path]:
 
 def _process_one_image(source_path: Path, processor_chain: ProcessorChain) -> tuple[bool, str]:
     container = None
+    runtime_backup: dict[str, tuple[str, str]] = {}
     try:
         container = ImageContainer(source_path)
         container.is_use_equivalent_focal_length(config.use_equivalent_focal_length())
+        runtime_backup = _apply_photographer_runtime_mapping(container)
         processor_chain.process(container)
 
         target_path = _resolve_target_path(source_path)
@@ -221,6 +272,7 @@ def _process_one_image(source_path: Path, processor_chain: ProcessorChain) -> tu
         logger.exception("处理失败：%s", source_path)
         return False, f"失败：{source_path.name}，原因：{exc}"
     finally:
+        _restore_element_runtime_mapping(runtime_backup)
         if container is not None:
             _safe_close_container(container)
 
@@ -287,12 +339,14 @@ def build_preview_images(sample_path: str | Path, values: dict) -> tuple[PILImag
     container = None
     before = None
     after = None
+    runtime_backup: dict[str, tuple[str, str]] = {}
     try:
         container = ImageContainer(sample_file)
         container.is_use_equivalent_focal_length(config.use_equivalent_focal_length())
 
         before = _resize_for_preview(container.get_img())
 
+        runtime_backup = _apply_photographer_runtime_mapping(container)
         processor_chain = _build_processor_chain()
         processor_chain.process(container)
 
@@ -307,6 +361,42 @@ def build_preview_images(sample_path: str | Path, values: dict) -> tuple[PILImag
             after.close()
         raise RuntimeError(f"预览生成失败：{exc}") from exc
     finally:
+        _restore_element_runtime_mapping(runtime_backup)
+        if container is not None:
+            _safe_close_container(container)
+
+
+def build_preview_image_with_exif(sample_path: str | Path, values: dict) -> tuple[PILImage.Image, dict, str]:
+    """基于当前设置处理一张示例图，并在同一次读取中返回处理后预览和 EXIF 预览。"""
+    sample_file = Path(sample_path)
+    if not sample_file.exists() or not sample_file.is_file():
+        raise FileNotFoundError(f"示例图片不存在：{sample_file}")
+
+    apply_runtime_config_from_values(values, save=False, ensure_output_dir=False)
+
+    container = None
+    after = None
+    runtime_backup: dict[str, tuple[str, str]] = {}
+    try:
+        container = ImageContainer(sample_file)
+        container.is_use_equivalent_focal_length(config.use_equivalent_focal_length())
+
+        exif_preview = _collect_exif_preview_from_container(container)
+
+        runtime_backup = _apply_photographer_runtime_mapping(container)
+        processor_chain = _build_processor_chain()
+        processor_chain.process(container)
+
+        after = _resize_for_preview(container.get_watermark_img())
+
+        message = f"预览完成：{sample_file.name}"
+        return after, exif_preview, message
+    except Exception as exc:
+        if after is not None:
+            after.close()
+        raise RuntimeError(f"预览生成失败：{exc}") from exc
+    finally:
+        _restore_element_runtime_mapping(runtime_backup)
         if container is not None:
             _safe_close_container(container)
 
@@ -316,7 +406,7 @@ def _format_param_exif(container: ImageContainer) -> str:
     f_number = container.exif.get("FNumber", "--")
     exposure = container.exif.get("ExposureTime", "--")
     iso = container.exif.get("ISO", "--")
-    return f"FocalLength={focal}; FNumber={f_number}; ExposureTime={exposure}; ISO={iso}"
+    return f"焦距={focal}; 光圈={f_number}; 快门={exposure}; ISO={iso}"
 
 
 def _format_element_exif(container: ImageContainer, element_name: str, rendered_value: str, custom_value: str) -> str:
@@ -338,23 +428,109 @@ def _format_element_exif(container: ImageContainer, element_name: str, rendered_
         lat = exif.get("GPSLatitude", "--")
         lng = exif.get("GPSLongitude", "--")
         return f"GPSLatitude/GPSLongitude: {lat} / {lng}"
+    if element_name == "Photographer":
+        return f"拍摄者: {_resolve_photographer_name(exif)}"
     if element_name == "Custom":
         return f"Custom: {custom_value or '--'}"
     if element_name == "None":
         return "当前元素未启用"
-    return f"派生值: {rendered_value or '--'}"
+    return rendered_value or "--"
 
 
-def _resolve_logo_info(make: str) -> str:
+def _resolve_photographer_name(exif: dict) -> str:
+    for key in ("Artist", "Author", "Creator", "By-line", "XPAuthor", "Copyright"):
+        value = exif.get(key)
+        if isinstance(value, bytes):
+            for encoding in ("utf-16-le", "utf-8", "latin1"):
+                try:
+                    value = value.decode(encoding, errors="ignore")
+                    break
+                except Exception:
+                    continue
+        text = str(value or "").strip().strip("\x00")
+        if text:
+            return text
+    return "--"
+
+
+def _apply_photographer_runtime_mapping(container: ImageContainer) -> dict[str, tuple[str, str]]:
+    """把 Photographer 临时映射为 Custom，便于复用原有渲染链。"""
+    layout_elements = config.get_data().get("layout", {}).get("elements", {})
+    photographer = _resolve_photographer_name(container.exif)
+    backup: dict[str, tuple[str, str]] = {}
+
+    for location in LOCATION_KEYS:
+        element_cfg = layout_elements.get(location, {})
+        if element_cfg.get("name") != "Photographer":
+            continue
+        old_name = str(element_cfg.get("name", "") or "")
+        old_value = str(element_cfg.get("value", "") or "")
+        backup[location] = (old_name, old_value)
+        element_cfg["name"] = "Custom"
+        element_cfg["value"] = "" if photographer == "--" else photographer
+
+    return backup
+
+
+def _restore_element_runtime_mapping(backup: dict[str, tuple[str, str]]) -> None:
+    if not backup:
+        return
+    layout_elements = config.get_data().get("layout", {}).get("elements", {})
+    for location, (old_name, old_value) in backup.items():
+        if location not in layout_elements:
+            continue
+        layout_elements[location]["name"] = old_name
+        layout_elements[location]["value"] = old_value
+
+
+def _resolve_logo_info(make: str) -> dict:
     logo_config = config.get_data().get("logo", {})
     makes = logo_config.get("makes", {})
-    default_path = logo_config.get("default", {}).get("path", "")
     normalized_make = (make or "").lower()
+
     for make_key, make_item in makes.items():
         make_id = (make_item.get("id") or "").lower()
         if make_id and make_id in normalized_make:
-            return f"Make={make or '--'}; 匹配logo={make_key}; Path={make_item.get('path', '')}"
-    return f"Make={make or '--'}; 使用默认logo; Path={default_path}"
+            return {
+                "make": make or "--",
+                "matched_logo_key": make_key,
+                "matched_logo_path": make_item.get("path", ""),
+                "matched_logo_label": make_item.get("id") or make_key,
+            }
+
+    return {
+        "make": make or "--",
+        "matched_logo_key": "",
+        "matched_logo_path": "",
+        "matched_logo_label": "",
+    }
+
+
+def _collect_exif_preview_from_container(container: ImageContainer) -> dict:
+    data = config.get_data().get("layout", {}).get("elements", {})
+    location_to_element_getter = {
+        "left_top": config.get_left_top,
+        "right_top": config.get_right_top,
+        "left_bottom": config.get_left_bottom,
+        "right_bottom": config.get_right_bottom,
+    }
+
+    element_info: dict[str, str] = {}
+    for location in LOCATION_KEYS:
+        getter = location_to_element_getter[location]
+        element_name = data.get(location, {}).get("name", "")
+        custom_value = data.get(location, {}).get("value", "")
+        if element_name == "Photographer":
+            rendered_value = _resolve_photographer_name(container.exif)
+        else:
+            rendered_value = container.get_attribute_str(getter())
+        exif_text = _format_element_exif(container, element_name, rendered_value, custom_value)
+        element_info[location] = exif_text
+
+    return {
+        "logo": _resolve_logo_info(container.make),
+        "elements": element_info,
+    }
 
 
 def get_image_exif_preview(sample_path: str | Path, values: dict) -> dict:
@@ -368,28 +544,7 @@ def get_image_exif_preview(sample_path: str | Path, values: dict) -> dict:
     try:
         container = ImageContainer(sample_file)
         container.is_use_equivalent_focal_length(config.use_equivalent_focal_length())
-
-        data = config.get_data().get("layout", {}).get("elements", {})
-        location_to_element_getter = {
-            "left_top": config.get_left_top,
-            "right_top": config.get_right_top,
-            "left_bottom": config.get_left_bottom,
-            "right_bottom": config.get_right_bottom,
-        }
-
-        element_info: dict[str, str] = {}
-        for location in LOCATION_KEYS:
-            getter = location_to_element_getter[location]
-            element_name = data.get(location, {}).get("name", "")
-            custom_value = data.get(location, {}).get("value", "")
-            rendered_value = container.get_attribute_str(getter())
-            exif_text = _format_element_exif(container, element_name, rendered_value, custom_value)
-            element_info[location] = f"当前值: {rendered_value or '--'} | EXIF: {exif_text}"
-
-        return {
-            "logo": _resolve_logo_info(container.make),
-            "elements": element_info,
-        }
+        return _collect_exif_preview_from_container(container)
     finally:
         if container is not None:
             _safe_close_container(container)
