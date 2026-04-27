@@ -41,8 +41,22 @@ def _resolve_exiftool_path():
 
 EXIFTOOL_PATH = _resolve_exiftool_path()
 ENCODING = 'gbk' if platform.system() == 'Windows' else 'utf-8'
+_WINDOWS_NO_WINDOW_KWARGS = {}
+if platform.system() == 'Windows':
+    _WINDOWS_NO_WINDOW_KWARGS['creationflags'] = subprocess.CREATE_NO_WINDOW
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    _WINDOWS_NO_WINDOW_KWARGS['startupinfo'] = startupinfo
 
 logger = logging.getLogger(__name__)
+
+
+def subprocess_no_window_kwargs() -> dict:
+    return dict(_WINDOWS_NO_WINDOW_KWARGS)
+
+
+def check_output_no_window(args):
+    return subprocess.check_output(args, **subprocess_no_window_kwargs())
 
 
 def get_file_list(path):
@@ -64,7 +78,7 @@ def get_exif(path) -> dict:
     """
     exif_dict = {}
     try:
-        output_bytes = subprocess.check_output([EXIFTOOL_PATH, '-d', '%Y-%m-%d %H:%M:%S%3f%z', path])
+        output_bytes = check_output_no_window([EXIFTOOL_PATH, '-d', '%Y-%m-%d %H:%M:%S%3f%z', path])
         output = output_bytes.decode('utf-8', errors='ignore')
 
         lines = output.splitlines()
@@ -101,7 +115,7 @@ def insert_exif(source_path, target_path) -> None:
     """
     try:
         # 将 exif 信息转换为字节串
-        subprocess.check_output([EXIFTOOL_PATH, '-tagsfromfile', source_path, '-overwrite_original', target_path])
+        check_output_no_window([EXIFTOOL_PATH, '-tagsfromfile', source_path, '-overwrite_original', target_path])
     except ValueError as e:
         logger.exception(f'ValueError: {source_path}: cannot insert exif {str(e)}')
 

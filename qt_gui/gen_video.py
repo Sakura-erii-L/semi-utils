@@ -8,6 +8,7 @@ from datetime import datetime
 
 import requests as requests
 from tqdm import tqdm
+from utils import subprocess_no_window_kwargs
 
 
 def get_ffmpeg_path():
@@ -95,7 +96,7 @@ def generate_video(path, gap_time=2):
     command = f'"{ffmpeg_path}" -f concat -safe 0 -r 1/{gap_time} -i temp.txt -vf "scale=3840:2160:force_original_aspect_ratio=decrease,pad=3840:2160:(ow-iw)/2:(oh-ih)/2:color=white" -c:v libx264 -r 24 -pix_fmt yuv420p -color_range 1 "{output_file}"'
 
     # 开启新的线程来执行命令
-    process = subprocess.Popen(command, shell=True, encoding='utf-8')
+    process = subprocess.Popen(command, shell=True, encoding='utf-8', **subprocess_no_window_kwargs())
 
     stdout, stderr = process.communicate()
     if process.returncode == 0:
@@ -113,7 +114,7 @@ def generate_video(path, gap_time=2):
 
         # 开启新的线程来执行命令
         process = subprocess.Popen(command_bgm, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                   encoding='utf-8')
+                                   encoding='utf-8', **subprocess_no_window_kwargs())
 
         # 转动字符显示
         spinning_chars = ['-', '\\', '|', '/']

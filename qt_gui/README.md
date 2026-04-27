@@ -173,12 +173,13 @@ portable/SemiUtilsQt/
 portable/SemiUtilsQt-windows.zip
 ```
 
-默认使用 Nuitka standalone 文件夹模式。入口仍是 exe，但不会像单文件 exe 那样每次启动先解压运行库，因此优先保证启动速度；zip 只用于分享压缩。
+默认使用 PyInstaller onedir/windowed 模式。直接打开 exe 不会弹出控制台；运行依赖和资源会放在 `portable/SemiUtilsQt/` 中，脚本会额外确保 `logo.ico`、`logos/` 和 `exiftool/` 被复制到便携目录，zip 只用于分享压缩。
 
 构建日志：
 
 ```text
-build_release.log
+logs/build_release_YYYYMMDD_HHMMSS_PID.log
+logs/build_release.log  # 最新日志副本
 ```
 
 构建中间产物：
@@ -197,5 +198,5 @@ temp/
 - 改默认 Logo：修改 `config.yaml -> logo.default.path`。
 - 改预览来源：看 `main_gui._resolve_preview_source_path()`。
 - 改支持格式：看 `semi_bridge.SUPPORTED_SUFFIXES`。
-- 改打包资源：看 `build_release.bat` 的 Nuitka `--include-data-*` 参数。
+- 改打包资源：看 `build_release.bat` 的 PyInstaller `--add-data` 参数。
 - 保持便携性：不要把 `config.yaml` 中的资源路径改成本机绝对路径。

@@ -70,11 +70,11 @@ def get_focal_length(exif):
 
 
 class ImageContainer(object):
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, exif: dict | None = None):
         self.path: Path = path
         self.target_path: Path | None = None
         self.img: Image.Image = Image.open(path)
-        self.exif: dict = get_exif(path)
+        self.exif: dict = exif.copy() if exif is not None else get_exif(path)
         # 图像信息
         self.original_width = self.img.width
         self.original_height = self.img.height

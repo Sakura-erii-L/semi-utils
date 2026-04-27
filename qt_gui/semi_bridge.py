@@ -20,11 +20,14 @@ from gen_video import generate_video
 from init import ITEM_LIST
 from init import LAYOUT_ITEMS
 from init import config
+from utils import get_exif
 
 logger = logging.getLogger(__name__)
 
 LOCATION_KEYS = ("left_top", "right_top", "left_bottom", "right_bottom")
 SUPPORTED_SUFFIXES = {".jpg", ".jpeg", ".png", ".JPG", ".JPEG", ".PNG"}
+_PREVIEW_EXIF_CACHE_MAX = 16
+_preview_exif_cache: dict[str, tuple[tuple[int, int], dict]] = {}
 
 # 使用 init.py 中已注册的布局信息，避免重复维护“布局ID -> 处理器类”的映射。
 _LAYOUT_CLASS_MAP = {item.value: item.processor.__class__ for item in LAYOUT_ITEMS}
@@ -174,8 +177,10 @@ def apply_runtime_config_from_values(values: dict, save: bool = True, ensure_out
     layout_data["logo_enable"] = bool(values.get("logo_enable", layout_data.get("logo_enable", False)))
 
     selected_logo_path = values.get("default_logo_path", "")
-    if selected_logo_path:
+    if selected_logo_path and selected_logo_path != data["logo"]["default"].get("path", ""):
         data["logo"]["default"]["path"] = selected_logo_path
+        if hasattr(config, "_logos"):
+            config._logos.clear()
 
     global_data["white_margin"]["enable"] = bool(values.get("white_margin", global_data["white_margin"].get("enable", True)))
     global_data["shadow"]["enable"] = bool(values.get("shadow", global_data["shadow"].get("enable", False)))
@@ -328,6 +333,35 @@ def _resize_for_preview(image: PILImage.Image, max_side: int = 960) -> PILImage.
     return preview
 
 
+def _get_cached_preview_exif(sample_file: Path) -> dict:
+    stat = sample_file.stat()
+    cache_key = str(sample_file.resolve())
+    cache_token = (stat.st_mtime_ns, stat.st_size)
+    cached = _preview_exif_cache.get(cache_key)
+    if cached is not None and cached[0] == cache_token:
+        return cached[1].copy()
+
+    exif = get_exif(sample_file)
+    _preview_exif_cache[cache_key] = (cache_token, exif.copy())
+    while len(_preview_exif_cache) > _PREVIEW_EXIF_CACHE_MAX:
+        _preview_exif_cache.pop(next(iter(_preview_exif_cache)))
+    return exif
+
+
+def _build_preview_container(sample_file: Path, max_side: int) -> ImageContainer:
+    container = ImageContainer(sample_file, exif=_get_cached_preview_exif(sample_file))
+    image = container.get_img()
+    if max(image.width, image.height) <= max_side:
+        return container
+
+    preview_image = image.copy()
+    preview_image.thumbnail((max_side, max_side), PILImage.Resampling.LANCZOS)
+    image.close()
+    container.img = preview_image
+    container.watermark_img = None
+    return container
+
+
 def build_preview_images(
     sample_path: str | Path,
     values: dict,
@@ -345,7 +379,7 @@ def build_preview_images(
     after = None
     runtime_backup: dict[str, tuple[str, str]] = {}
     try:
-        container = ImageContainer(sample_file)
+        container = _build_preview_container(sample_file, max_side)
         container.is_use_equivalent_focal_length(config.use_equivalent_focal_length())
 
         before = _resize_for_preview(container.get_img(), max_side=max_side)
@@ -386,7 +420,7 @@ def build_preview_image_with_exif(
     after = None
     runtime_backup: dict[str, tuple[str, str]] = {}
     try:
-        container = ImageContainer(sample_file)
+        container = _build_preview_container(sample_file, max_side)
         container.is_use_equivalent_focal_length(config.use_equivalent_focal_length())
 
         exif_preview = _collect_exif_preview_from_container(container)
@@ -553,7 +587,7 @@ def get_image_exif_preview(sample_path: str | Path, values: dict) -> dict:
 
     container = None
     try:
-        container = ImageContainer(sample_file)
+        container = ImageContainer(sample_file, exif=_get_cached_preview_exif(sample_file))
         container.is_use_equivalent_focal_length(config.use_equivalent_focal_length())
         return _collect_exif_preview_from_container(container)
     finally:

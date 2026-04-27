@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+import json
 from pathlib import Path
 import os
 from queue import Empty
@@ -36,7 +37,6 @@ from PySide6.QtCore import QThread
 from PySide6.QtCore import QTimer
 from PySide6.QtCore import Signal
 from PySide6.QtCore import Slot
-from PySide6 import QtCore as _QtCore
 from PySide6.QtGui import QFont
 from PySide6.QtGui import QImage
 from PySide6.QtGui import QIcon
@@ -83,28 +83,10 @@ LOCATION_LABELS = {
 }
 
 PREVIEW_IMAGE_PATH = Path(__file__).resolve().parent.joinpath("example.jpg")
-PREVIEW_MAX_SIDE = 960
-
-
-def _disable_broken_nuitka_pyside_signal_patch() -> None:
-    post_load_module = sys.modules.get("PySide6-postLoad")
-    if post_load_module is None:
-        return
-
-    orig_connect = getattr(post_load_module, "orig_connect", None)
-    if orig_connect is not None:
-        _QtCore.SignalInstance.connect = orig_connect
-
-    orig_disconnect = getattr(post_load_module, "orig_disconnect", None)
-    if orig_disconnect is not None:
-        _QtCore.SignalInstance.disconnect = orig_disconnect
-
-    orig_single_shot = getattr(post_load_module, "orig_singleShot", None)
-    if orig_single_shot is not None:
-        _QtCore.QTimer.singleShot = orig_single_shot
-
-
-_disable_broken_nuitka_pyside_signal_patch()
+PREVIEW_MAX_SIDE = 720
+PREVIEW_DEBOUNCE_MS = 500
+PREVIEW_RESULT_POLL_MS = 80
+PREVIEW_PENDING_DISPATCH_DELAY_MS = 120
 
 
 class ImagePreviewLabel(QLabel):
@@ -149,6 +131,8 @@ class NoWheelComboBox(QComboBox):
 
     def __init__(self):
         super().__init__()
+        self.setMaxVisibleItems(12)
+        self.view().setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.view().installEventFilter(self)
         self.view().viewport().installEventFilter(self)
 
@@ -159,8 +143,7 @@ class NoWheelComboBox(QComboBox):
         if event.type() == QEvent.Type.Wheel and (
             watched is self.view() or watched is self.view().viewport()
         ):
-            event.ignore()
-            return True
+            return False
         return super().eventFilter(watched, event)
 
 
@@ -252,7 +235,7 @@ class MainWindow(QMainWindow):
         self.video_thread: QThread | None = None
         self.video_worker: VideoWorker | None = None
         self.preview_executor: ThreadPoolExecutor | None = None
-        self.preview_results: Queue[tuple[str, int, str, object, object, str]] = Queue(maxsize=1)
+        self.preview_results: Queue[tuple[str, int, str, object, object, str, object]] = Queue(maxsize=1)
         self.realtime_preview_paused = False
         self.preview_busy = False
         self.preview_pending = False
@@ -260,14 +243,21 @@ class MainWindow(QMainWindow):
         self.preview_latest_request_id = 0
         self.preview_pending_source: Path | None = None
         self.preview_pending_settings: dict | None = None
+        self.preview_active_signature: tuple[str, str] | None = None
+        self.preview_pending_signature: tuple[str, str] | None = None
+        self.preview_last_rendered_signature: tuple[str, str] | None = None
 
         self.preview_timer = QTimer(self)
         self.preview_timer.setSingleShot(True)
         self.preview_timer.timeout.connect(self._refresh_preview_now)
 
         self.preview_result_timer = QTimer(self)
-        self.preview_result_timer.setInterval(30)
+        self.preview_result_timer.setInterval(PREVIEW_RESULT_POLL_MS)
         self.preview_result_timer.timeout.connect(self._drain_preview_results)
+
+        self.preview_pending_timer = QTimer(self)
+        self.preview_pending_timer.setSingleShot(True)
+        self.preview_pending_timer.timeout.connect(self._dispatch_pending_preview_if_needed)
 
         self._setup_preview_thread()
 
@@ -289,9 +279,13 @@ class MainWindow(QMainWindow):
     def _teardown_preview_thread(self) -> None:
         self.preview_timer.stop()
         self.preview_result_timer.stop()
+        self.preview_pending_timer.stop()
         self.preview_pending = False
         self.preview_pending_source = None
         self.preview_pending_settings = None
+        self.preview_active_signature = None
+        self.preview_pending_signature = None
+        self.preview_last_rendered_signature = None
         self.preview_latest_request_id += 1
 
         if self.preview_executor is not None:
@@ -816,6 +810,7 @@ class MainWindow(QMainWindow):
         self.layout_combo.currentIndexChanged.connect(self._schedule_realtime_preview)
         self.logo_enable_check.stateChanged.connect(self._schedule_realtime_preview)
         self.default_logo_combo.currentIndexChanged.connect(self._schedule_realtime_preview)
+        self.default_logo_combo.activated.connect(self._on_default_logo_activated)
         self.white_margin_check.stateChanged.connect(self._schedule_realtime_preview)
         self.shadow_check.stateChanged.connect(self._schedule_realtime_preview)
         self.equivalent_check.stateChanged.connect(self._schedule_realtime_preview)
@@ -1160,13 +1155,25 @@ class MainWindow(QMainWindow):
         self._toggle_custom_input(location_key)
         self._schedule_realtime_preview()
 
+    def _on_default_logo_activated(self, *_args) -> None:
+        preview_source = self._resolve_preview_source_path()
+        if preview_source is not None:
+            self.logo_auto_selected_source = str(preview_source.resolve())
+        self.preview_last_rendered_signature = None
+        self.preview_pending_signature = None
+        self._schedule_realtime_preview()
+
     def _set_realtime_preview_paused(self, paused: bool, reason: str | None = None) -> None:
         self.realtime_preview_paused = paused
         if paused:
             self.preview_timer.stop()
+            self.preview_pending_timer.stop()
             self.preview_pending = False
             self.preview_pending_source = None
             self.preview_pending_settings = None
+            self.preview_pending_signature = None
+            self.preview_active_signature = None
+            self.preview_last_rendered_signature = None
             self.preview_latest_request_id += 1
             self.preview_status_label.setText(f"状态：{reason or '实时预览已暂停'}")
             return
@@ -1176,7 +1183,7 @@ class MainWindow(QMainWindow):
     def _schedule_realtime_preview(self, *_args) -> None:
         if self.realtime_preview_paused:
             return
-        self.preview_timer.start(350)
+        self.preview_timer.start(PREVIEW_DEBOUNCE_MS)
 
     def _refresh_preview_now(self) -> None:
         if self.realtime_preview_paused:
@@ -1190,6 +1197,9 @@ class MainWindow(QMainWindow):
             self.preview_pending = False
             self.preview_pending_source = None
             self.preview_pending_settings = None
+            self.preview_pending_signature = None
+            self.preview_active_signature = None
+            self.preview_last_rendered_signature = None
             self.after_preview_label.set_preview_pixmap(None)
             self.preview_meta_label.setText("预览区：未找到可用图片，无法生成实时预览。")
             self.preview_status_label.setText("状态：请先选择输入目录或图片")
@@ -1197,20 +1207,35 @@ class MainWindow(QMainWindow):
             return
 
         settings = self._collect_form_settings()
+        signature = self._make_preview_signature(preview_source, settings)
         if self.preview_busy:
+            if signature == self.preview_active_signature or signature == self.preview_pending_signature:
+                return
             self.preview_pending = True
             self.preview_pending_source = preview_source
             self.preview_pending_settings = settings
+            self.preview_pending_signature = signature
             self.preview_status_label.setText("状态：正在渲染，稍后刷新最新预览...")
             return
 
-        self._dispatch_preview_request(preview_source, settings)
+        if signature == self.preview_last_rendered_signature:
+            return
 
-    def _dispatch_preview_request(self, preview_source: Path, settings: dict) -> None:
+        self._dispatch_preview_request(preview_source, settings, signature)
+
+    def _dispatch_preview_request(
+        self,
+        preview_source: Path,
+        settings: dict,
+        signature: tuple[str, str] | None = None,
+    ) -> None:
         self.preview_request_id += 1
         request_id = self.preview_request_id
+        if signature is None:
+            signature = self._make_preview_signature(preview_source, settings)
         self.preview_latest_request_id = request_id
         self.preview_busy = True
+        self.preview_active_signature = signature
         self.preview_status_label.setText("状态：正在渲染实时预览...")
         if self.preview_executor is None:
             self.preview_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="preview-render")
@@ -1222,6 +1247,7 @@ class MainWindow(QMainWindow):
             request_id,
             str(preview_source),
             settings.copy(),
+            signature,
         )
 
     @staticmethod
@@ -1230,6 +1256,7 @@ class MainWindow(QMainWindow):
         request_id: int,
         preview_source: str,
         settings: dict,
+        signature: tuple[str, str] | None,
     ) -> None:
         after_image = None
         try:
@@ -1241,12 +1268,12 @@ class MainWindow(QMainWindow):
             preview_data = MainWindow._pil_to_preview_rgba(after_image)
             MainWindow._put_latest_preview_result(
                 result_queue,
-                ("rendered", request_id, preview_source, preview_data, exif_preview, message),
+                ("rendered", request_id, preview_source, preview_data, exif_preview, message, signature),
             )
         except Exception as exc:
             MainWindow._put_latest_preview_result(
                 result_queue,
-                ("failed", request_id, preview_source, None, None, str(exc)),
+                ("failed", request_id, preview_source, None, None, str(exc), signature),
             )
         finally:
             if after_image is not None:
@@ -1256,7 +1283,7 @@ class MainWindow(QMainWindow):
                     pass
 
     @staticmethod
-    def _put_latest_preview_result(result_queue: Queue, result: tuple[str, int, str, object, object, str]) -> None:
+    def _put_latest_preview_result(result_queue: Queue, result: tuple[str, int, str, object, object, str, object]) -> None:
         while True:
             try:
                 result_queue.get_nowait()
@@ -1272,15 +1299,23 @@ class MainWindow(QMainWindow):
         rgba_image = image.convert("RGBA")
         return rgba_image.tobytes("raw", "RGBA"), rgba_image.width, rgba_image.height
 
+    @staticmethod
+    def _make_preview_signature(preview_source: Path, settings: dict) -> tuple[str, str]:
+        source_key = str(preview_source.resolve())
+        settings_key = json.dumps(settings, sort_keys=True, ensure_ascii=False, default=str)
+        return source_key, settings_key
+
     def _drain_preview_results(self) -> None:
         while True:
             try:
-                kind, request_id, preview_source, preview_data, exif_preview, message = self.preview_results.get_nowait()
+                kind, request_id, preview_source, preview_data, exif_preview, message, signature = (
+                    self.preview_results.get_nowait()
+                )
             except Empty:
                 break
 
             if kind == "rendered":
-                self._on_preview_rendered(request_id, preview_source, preview_data, exif_preview, message)
+                self._on_preview_rendered(request_id, preview_source, preview_data, exif_preview, message, signature)
             else:
                 self._on_preview_failed(request_id, message)
 
@@ -1298,19 +1333,43 @@ class MainWindow(QMainWindow):
             self.preview_pending = False
             self.preview_pending_source = None
             self.preview_pending_settings = None
+            self.preview_pending_signature = None
             return
         if self.processing_thread is not None or self.video_thread is not None:
             return
+        if self.preview_busy:
+            self.preview_pending_timer.start(PREVIEW_PENDING_DISPATCH_DELAY_MS)
+            return
         if self.preview_pending_source is None or self.preview_pending_settings is None:
             self.preview_pending = False
+            self.preview_pending_signature = None
             return
 
         pending_source = self.preview_pending_source
         pending_settings = self.preview_pending_settings
+        pending_signature = self.preview_pending_signature or self._make_preview_signature(
+            pending_source,
+            pending_settings,
+        )
         self.preview_pending = False
         self.preview_pending_source = None
         self.preview_pending_settings = None
-        self._dispatch_preview_request(pending_source, pending_settings)
+        self.preview_pending_signature = None
+        if pending_signature == self.preview_last_rendered_signature:
+            self.preview_status_label.setText("状态：实时预览已更新")
+            return
+        self._dispatch_preview_request(pending_source, pending_settings, pending_signature)
+
+    def _schedule_pending_preview_dispatch(self) -> None:
+        if not self.preview_pending:
+            return
+        if self.realtime_preview_paused:
+            self.preview_pending = False
+            self.preview_pending_source = None
+            self.preview_pending_settings = None
+            self.preview_pending_signature = None
+            return
+        self.preview_pending_timer.start(PREVIEW_PENDING_DISPATCH_DELAY_MS)
 
     def _on_preview_rendered(
         self,
@@ -1319,6 +1378,7 @@ class MainWindow(QMainWindow):
         preview_data,
         exif_preview,
         _message: str,
+        signature,
     ) -> None:
         try:
             if request_id != self.preview_latest_request_id:
@@ -1342,6 +1402,8 @@ class MainWindow(QMainWindow):
             preview_exif = exif_preview if isinstance(exif_preview, dict) else {}
             self._update_exif_info_panels(preview_exif)
             self._auto_select_logo_once_for_source(source_path, preview_exif)
+            if isinstance(signature, tuple) and len(signature) == 2:
+                self.preview_last_rendered_signature = signature
             self.preview_status_label.setText("状态：实时预览已更新")
         except Exception as exc:
             if request_id == self.preview_latest_request_id:
@@ -1350,7 +1412,8 @@ class MainWindow(QMainWindow):
                 self._clear_exif_info_panels()
         finally:
             self.preview_busy = False
-            self._dispatch_pending_preview_if_needed()
+            self.preview_active_signature = None
+            self._schedule_pending_preview_dispatch()
 
     def _on_preview_failed(self, request_id: int, message: str) -> None:
         if request_id == self.preview_latest_request_id and not self.preview_pending:
@@ -1359,7 +1422,8 @@ class MainWindow(QMainWindow):
             self._clear_exif_info_panels()
 
         self.preview_busy = False
-        self._dispatch_pending_preview_if_needed()
+        self.preview_active_signature = None
+        self._schedule_pending_preview_dispatch()
 
     def _toggle_custom_input(self, location_key: str) -> None:
         controls = self.element_controls[location_key]

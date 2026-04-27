@@ -114,23 +114,26 @@ class Config(object):
         """
         logo_path = self._data['logo']['default']['path']
         if logo_path:
-            return Image.open(logo_path)
+            cache_key = ('default', logo_path)
+            if cache_key not in self._logos:
+                self._logos[cache_key] = Image.open(logo_path).convert('RGBA')
+            return self._logos[cache_key].copy()
 
         # 已经读到内存中的 logo
         if make in self._logos:
-            return self._logos[make]
+            return self._logos[make].copy()
         # 未读取到内存中的 logo
         for m in self._makes.values():
             if m['id'] == '':
                 pass
             if m['id'].lower() in make.lower():
-                logo = Image.open(m['path'])
+                logo = Image.open(m['path']).convert('RGBA')
                 self._logos[make] = logo
-                return logo
+                return logo.copy()
         logo_path = self._data['logo']['default']['path']
-        logo = Image.open(logo_path)
+        logo = Image.open(logo_path).convert('RGBA')
         self._logos[make] = logo
-        return logo
+        return logo.copy()
 
     def get_data(self) -> dict:
         return self._data
@@ -324,6 +327,7 @@ class Config(object):
 
     def set_default_logo_path(self, logo_path):
         self._data["logo"]['default']['path'] = logo_path
+        self._logos.clear()
         self.save()
 
     # 更新输入路径
