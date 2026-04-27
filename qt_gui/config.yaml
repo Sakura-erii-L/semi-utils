@@ -1,0 +1,90 @@
+base:
+  alternative_bold_font: F:\A_none_huawei\Photograph\Tools\semi-utils\qt_gui\fonts\Roboto-Medium.ttf
+  alternative_font: F:\A_none_huawei\Photograph\Tools\semi-utils\qt_gui\fonts\Roboto-Regular.ttf
+  bold_font: F:\A_none_huawei\Photograph\Tools\semi-utils\qt_gui\fonts\AlibabaPuHuiTi-2-85-Bold.otf
+  bold_font_size: 1
+  font: F:\A_none_huawei\Photograph\Tools\semi-utils\qt_gui\fonts\AlibabaPuHuiTi-2-45-Light.otf
+  font_size: 1
+  input_dir: F:/A_none_huawei/Photograph/0Apsed/display3
+  output_dir: F:/A_none_huawei/Photograph/0Apsed/test
+  quality: 100
+global:
+  focal_length:
+    use_equivalent_focal_length: false
+  padding_with_original_ratio:
+    enable: false
+  shadow:
+    enable: false
+  white_margin:
+    enable: true
+    width: 3
+layout:
+  background_color: '#ffffff'
+  elements:
+    left_bottom:
+      color: '#757575'
+      is_bold: false
+      name: Model
+    left_top:
+      color: '#212121'
+      is_bold: true
+      name: Param
+    right_bottom:
+      color: '#757575'
+      is_bold: false
+      name: Datetime
+      value: Photo by NONE
+    right_top:
+      color: '#212121'
+      is_bold: true
+      name: Param
+  logo_enable: true
+  logo_position: left
+  type: watermark_right_logo
+logo:
+  default:
+    id: ''
+    path: F:\A_none_huawei\Photograph\Tools\semi-utils\qt_gui\logos\nikon.png
+  makes:
+    apple:
+      id: APPLE
+      path: F:\A_none_huawei\Photograph\Tools\semi-utils\qt_gui\logos\apple.png
+    canon:
+      id: Canon
+      path: F:\A_none_huawei\Photograph\Tools\semi-utils\qt_gui\logos\canon.png
+    dji:
+      id: DJI
+      path: F:\A_none_huawei\Photograph\Tools\semi-utils\qt_gui\logos\DJI.jpg
+    empty:
+      id: "\u7A7A"
+      path: F:\A_none_huawei\Photograph\Tools\semi-utils\qt_gui\logos\empty.png
+    fujifilm:
+      id: FUJIFILM
+      path: F:\A_none_huawei\Photograph\Tools\semi-utils\qt_gui\logos\fujifilm.png
+    hasselblad:
+      id: HASSELBLAD
+      path: F:\A_none_huawei\Photograph\Tools\semi-utils\qt_gui\logos\hasselblad.png
+    huawei:
+      id: HUAWEI
+      path: F:\A_none_huawei\Photograph\Tools\semi-utils\qt_gui\logos\xmage.png
+    leica:
+      id: leica
+      path: F:\A_none_huawei\Photograph\Tools\semi-utils\qt_gui\logos\leica_logo.png
+    nikon:
+      id: NIKON
+      path: F:\A_none_huawei\Photograph\Tools\semi-utils\qt_gui\logos\nikon.png
+    olympus:
+      id: Olympus
+      path: F:\A_none_huawei\Photograph\Tools\semi-utils\qt_gui\logos\olympus_blue_gold.png
+    panasonic:
+      id: Panasonic
+      path: F:\A_none_huawei\Photograph\Tools\semi-utils\qt_gui\logos\panasonic.png
+    pentax:
+      id: PENTAX
+      path: F:\A_none_huawei\Photograph\Tools\semi-utils\qt_gui\logos\pentax.png
+    ricoh:
+      id: RICOH
+      path: F:\A_none_huawei\Photograph\Tools\semi-utils\qt_gui\logos\ricoh.png
+    sony:
+      id: SONY
+      path: F:\A_none_huawei\Photograph\Tools\semi-utils\qt_gui\logos\sony.png

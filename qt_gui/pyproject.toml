@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "semi-utils-qt-gui"
+version = "0.1.0"
+description = "Qt GUI for semi-utils image processing workflow"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "pillow>=10.3.0",
+  "pyyaml>=6.0.1",
+  "python-dateutil>=2.8.2",
+  "requests>=2.31.0",
+  "PySide6>=6.8.1"
+]
+
+[project.scripts]
+semi-utils-qt-gui = "qt_gui.main_gui:main"
+
+[tool.setuptools]
+package-dir = {"" = ".."}
+py-modules = ["gen_video", "init", "utils"]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = [".."]
+include = ["qt_gui", "entity", "enums"]
+
+[tool.setuptools.package-data]
+qt_gui = [
+  "config.yaml",
+  "example.jpg",
+  "logo.ico",
+  "fonts/*",
+  "logos/*",
+  "exiftool/*",
+  "logs/*"
+]
+
+

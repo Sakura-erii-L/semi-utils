@@ -51,9 +51,11 @@ class Config(object):
     """
 
     def __init__(self, path):
-        self._path = path
+        self._path = str(Path(path).resolve())
+        self._base_dir = Path(self._path).parent
         with open(self._path, 'r', encoding='utf-8') as f:
             self._data = yaml.safe_load(f)
+        self._normalize_asset_paths()
         self._logos = {}
         self._left_top = ElementConfig(self._data['layout']['elements'][LOCATION_LEFT_TOP])
         self._left_bottom = ElementConfig(self._data['layout']['elements'][LOCATION_LEFT_BOTTOM])
@@ -63,6 +65,30 @@ class Config(object):
         self.bg_color = self._data['layout']['background_color'] \
             if 'background_color' in self._data['layout'] \
             else '#ffffff'
+
+    def _resolve_path(self, path_value: str) -> str:
+        path_obj = Path(path_value)
+        if path_obj.is_absolute():
+            return str(path_obj)
+        return str(self._base_dir.joinpath(path_obj).resolve())
+
+    def _normalize_asset_paths(self) -> None:
+        base_data = self._data.get('base', {})
+        for key in ('font', 'bold_font', 'alternative_font', 'alternative_bold_font'):
+            raw_value = base_data.get(key)
+            if isinstance(raw_value, str) and raw_value.strip() != '':
+                base_data[key] = self._resolve_path(raw_value)
+
+        logo_data = self._data.get('logo', {})
+        default_logo = logo_data.get('default', {})
+        default_path = default_logo.get('path')
+        if isinstance(default_path, str) and default_path.strip() != '':
+            default_logo['path'] = self._resolve_path(default_path)
+
+        for make_config in logo_data.get('makes', {}).values():
+            make_path = make_config.get('path')
+            if isinstance(make_path, str) and make_path.strip() != '':
+                make_config['path'] = self._resolve_path(make_path)
 
     def get(self, key):
         if key in self._data:

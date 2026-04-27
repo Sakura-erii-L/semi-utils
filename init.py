@@ -24,6 +24,10 @@ from entity.menu import *
 from enums.constant import *
 from gen_video import generate_video
 
+BASE_DIR = Path(__file__).resolve().parent
+DEFAULT_CONFIG_PATH = BASE_DIR.joinpath('config.yaml')
+CONFIG_PATH = Path(os.getenv('SEMI_UTILS_CONFIG', str(DEFAULT_CONFIG_PATH))).resolve()
+
 # 如果 logs 不存在，创建 logs
 Path('./logs').mkdir(parents=True, exist_ok=True)
 
@@ -70,7 +74,7 @@ class LayoutItem(object):
 
 
 # 读取配置
-config = Config('config.yaml')
+config = Config(str(CONFIG_PATH))
 
 EMPTY_PROCESSOR = EmptyProcessor(config)
 WATERMARK_PROCESSOR = WatermarkProcessor(config)

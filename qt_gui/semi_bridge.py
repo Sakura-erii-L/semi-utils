@@ -59,6 +59,25 @@ def get_source_file_list(input_dir: str) -> list[Path]:
     return _get_source_file_list(input_dir)
 
 
+def normalize_source_files(file_paths: list[str | Path] | None) -> list[Path]:
+    if not file_paths:
+        return []
+    normalized: list[Path] = []
+    seen: set[str] = set()
+    for file_path in file_paths:
+        path_obj = Path(file_path).resolve()
+        if not path_obj.exists() or not path_obj.is_file():
+            continue
+        if path_obj.suffix not in SUPPORTED_SUFFIXES:
+            continue
+        key = str(path_obj)
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(path_obj)
+    return normalized
+
+
 def get_runtime_config_snapshot() -> dict:
     data = config.get_data()
     element_data = data["layout"]["elements"]
@@ -172,11 +191,11 @@ def _resolve_target_path(source_path: Path) -> Path:
     if output_dir:
         return Path(output_dir).joinpath(source_path.name)
 
-    input_target = Path(config.get_input_dir()).joinpath(source_path.name)
-    if input_target.exists():
+    source_target = source_path.parent.joinpath(source_path.name)
+    if source_target.exists():
         stamp = datetime.now().strftime("%m%d-%H%M")
-        return input_target.with_name(f"{input_target.stem}{stamp}{input_target.suffix}")
-    return input_target
+        return source_target.with_name(f"{source_target.stem}{stamp}{source_target.suffix}")
+    return source_target
 
 
 def _get_source_file_list(input_dir: str) -> list[Path]:
@@ -207,12 +226,13 @@ def _process_one_image(source_path: Path, processor_chain: ProcessorChain) -> tu
 
 
 def process_images(
+    source_files: list[str | Path] | None = None,
     on_progress: Callable[[int, int, str, bool, str], None] | None = None,
     on_message: Callable[[str], None] | None = None,
     stop_checker: Callable[[], bool] | None = None,
 ) -> ProcessSummary:
     summary = ProcessSummary()
-    file_list = _get_source_file_list(config.get_input_dir())
+    file_list = normalize_source_files(source_files) if source_files else _get_source_file_list(config.get_input_dir())
     summary.total = len(file_list)
 
     if summary.total == 0:
@@ -286,6 +306,90 @@ def build_preview_images(sample_path: str | Path, values: dict) -> tuple[PILImag
         if after is not None:
             after.close()
         raise RuntimeError(f"预览生成失败：{exc}") from exc
+    finally:
+        if container is not None:
+            _safe_close_container(container)
+
+
+def _format_param_exif(container: ImageContainer) -> str:
+    focal = container.exif.get("FocalLength", "--")
+    f_number = container.exif.get("FNumber", "--")
+    exposure = container.exif.get("ExposureTime", "--")
+    iso = container.exif.get("ISO", "--")
+    return f"FocalLength={focal}; FNumber={f_number}; ExposureTime={exposure}; ISO={iso}"
+
+
+def _format_element_exif(container: ImageContainer, element_name: str, rendered_value: str, custom_value: str) -> str:
+    exif = container.exif
+    if element_name == "Model":
+        return f"CameraModelName: {exif.get('CameraModelName', '--')}"
+    if element_name == "Make":
+        return f"Make: {exif.get('Make', '--')}"
+    if element_name == "LensModel":
+        lens_value = exif.get("LensModel") or exif.get("Lens") or exif.get("LensID") or "--"
+        return f"LensModel/Lens/LensID: {lens_value}"
+    if element_name == "Param":
+        return _format_param_exif(container)
+    if element_name in {"Datetime", "Date"}:
+        return f"DateTimeOriginal: {exif.get('DateTimeOriginal', '--')}"
+    if element_name == "GeoInfo":
+        if "GPSPosition" in exif:
+            return f"GPSPosition: {exif.get('GPSPosition', '--')}"
+        lat = exif.get("GPSLatitude", "--")
+        lng = exif.get("GPSLongitude", "--")
+        return f"GPSLatitude/GPSLongitude: {lat} / {lng}"
+    if element_name == "Custom":
+        return f"Custom: {custom_value or '--'}"
+    if element_name == "None":
+        return "当前元素未启用"
+    return f"派生值: {rendered_value or '--'}"
+
+
+def _resolve_logo_info(make: str) -> str:
+    logo_config = config.get_data().get("logo", {})
+    makes = logo_config.get("makes", {})
+    default_path = logo_config.get("default", {}).get("path", "")
+    normalized_make = (make or "").lower()
+    for make_key, make_item in makes.items():
+        make_id = (make_item.get("id") or "").lower()
+        if make_id and make_id in normalized_make:
+            return f"Make={make or '--'}; 匹配logo={make_key}; Path={make_item.get('path', '')}"
+    return f"Make={make or '--'}; 使用默认logo; Path={default_path}"
+
+
+def get_image_exif_preview(sample_path: str | Path, values: dict) -> dict:
+    sample_file = Path(sample_path)
+    if not sample_file.exists() or not sample_file.is_file():
+        raise FileNotFoundError(f"示例图片不存在：{sample_file}")
+
+    apply_runtime_config_from_values(values, save=False, ensure_output_dir=False)
+
+    container = None
+    try:
+        container = ImageContainer(sample_file)
+        container.is_use_equivalent_focal_length(config.use_equivalent_focal_length())
+
+        data = config.get_data().get("layout", {}).get("elements", {})
+        location_to_element_getter = {
+            "left_top": config.get_left_top,
+            "right_top": config.get_right_top,
+            "left_bottom": config.get_left_bottom,
+            "right_bottom": config.get_right_bottom,
+        }
+
+        element_info: dict[str, str] = {}
+        for location in LOCATION_KEYS:
+            getter = location_to_element_getter[location]
+            element_name = data.get(location, {}).get("name", "")
+            custom_value = data.get(location, {}).get("value", "")
+            rendered_value = container.get_attribute_str(getter())
+            exif_text = _format_element_exif(container, element_name, rendered_value, custom_value)
+            element_info[location] = f"当前值: {rendered_value or '--'} | EXIF: {exif_text}"
+
+        return {
+            "logo": _resolve_logo_info(container.make),
+            "elements": element_info,
+        }
     finally:
         if container is not None:
             _safe_close_container(container)

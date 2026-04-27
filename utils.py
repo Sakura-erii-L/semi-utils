@@ -11,15 +11,36 @@ from PIL import ImageOps
 
 from enums.constant import TRANSPARENT
 
-if platform.system() == 'Windows':
-    EXIFTOOL_PATH = Path('./exiftool/exiftool.exe')
-    ENCODING = 'gbk'
-elif shutil.which('exiftool') is not None:
-    EXIFTOOL_PATH = shutil.which('exiftool')
-    ENCODING = 'utf-8'
-else:
-    EXIFTOOL_PATH = Path('./exiftool/exiftool')
-    ENCODING = 'utf-8'
+_RUNTIME_DIR = Path(__file__).resolve().parent
+
+
+def _resolve_exiftool_path():
+    if platform.system() == 'Windows':
+        candidates = [
+            _RUNTIME_DIR.joinpath('qt_gui', 'exiftool', 'exiftool.exe'),
+            _RUNTIME_DIR.joinpath('exiftool', 'exiftool.exe'),
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        return Path('exiftool.exe')
+
+    system_exiftool = shutil.which('exiftool')
+    if system_exiftool is not None:
+        return system_exiftool
+
+    candidates = [
+        _RUNTIME_DIR.joinpath('qt_gui', 'exiftool', 'exiftool'),
+        _RUNTIME_DIR.joinpath('exiftool', 'exiftool'),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return Path('exiftool')
+
+
+EXIFTOOL_PATH = _resolve_exiftool_path()
+ENCODING = 'gbk' if platform.system() == 'Windows' else 'utf-8'
 
 logger = logging.getLogger(__name__)
 

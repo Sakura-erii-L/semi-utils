@@ -3,11 +3,22 @@ from __future__ import annotations
 import sys
 from datetime import datetime
 from pathlib import Path
+import os
 
 # 允许通过 `python qt_gui/main_gui.py` 直接启动。
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+QT_GUI_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+# 优先使用 qt_gui 目录下的独立配置文件，确保 GUI 可单独打包运行。
+if 'SEMI_UTILS_CONFIG' not in os.environ:
+    bundled_config = QT_GUI_ROOT.joinpath('config.yaml')
+    fallback_config = PROJECT_ROOT.joinpath('config.yaml')
+    if bundled_config.exists():
+        os.environ['SEMI_UTILS_CONFIG'] = str(bundled_config)
+    elif fallback_config.exists():
+        os.environ['SEMI_UTILS_CONFIG'] = str(fallback_config)
 
 from PySide6.QtCore import QObject
 from PySide6.QtCore import Qt
@@ -45,9 +56,12 @@ from qt_gui.semi_bridge import apply_runtime_config_from_values
 from qt_gui.semi_bridge import build_preview_images
 from qt_gui.semi_bridge import generate_video_with_logs
 from qt_gui.semi_bridge import get_default_logo_options
+from qt_gui.semi_bridge import get_image_exif_preview
 from qt_gui.semi_bridge import get_element_options
 from qt_gui.semi_bridge import get_layout_options
 from qt_gui.semi_bridge import get_runtime_config_snapshot
+from qt_gui.semi_bridge import get_source_file_list
+from qt_gui.semi_bridge import normalize_source_files
 from qt_gui.semi_bridge import process_images
 
 LOCATION_LABELS = {
@@ -115,6 +129,7 @@ class ProcessWorker(QObject):
         try:
             apply_runtime_config_from_values(self.settings, save=True)
             summary = process_images(
+                source_files=self.settings.get("source_files"),
                 on_progress=self._emit_progress,
                 on_message=self.message.emit,
                 stop_checker=lambda: self.stop_requested,
@@ -168,7 +183,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Semi-Utils Qt 图形界面")
         self.resize(1360, 860)
 
-        icon_path = PROJECT_ROOT.joinpath("logo.ico")
+        icon_path = QT_GUI_ROOT.joinpath("logo.ico")
+        if not icon_path.exists():
+            icon_path = PROJECT_ROOT.joinpath("logo.ico")
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
 
@@ -185,6 +202,9 @@ class MainWindow(QMainWindow):
         self.preview_timer.timeout.connect(self._refresh_preview_now)
 
         self.element_controls: dict[str, dict[str, QWidget]] = {}
+        self.element_exif_labels: dict[str, QLabel] = {}
+        self.selected_source_files: list[str] = []
+        self.current_preview_source: Path | None = None
 
         self._build_ui()
         self._apply_styles()
@@ -347,11 +367,25 @@ class MainWindow(QMainWindow):
         self.output_dir_edit = QLineEdit()
 
         self.input_browse_btn = QPushButton("浏览")
+        self.input_files_btn = QPushButton("选择图片")
+        self.clear_files_btn = QPushButton("清空图片")
         self.output_browse_btn = QPushButton("浏览")
 
         input_row = QHBoxLayout()
         input_row.addWidget(self.input_dir_edit)
         input_row.addWidget(self.input_browse_btn)
+        input_row.addWidget(self.input_files_btn)
+        input_row.addWidget(self.clear_files_btn)
+
+        self.input_source_hint = QLabel("当前来源：输入目录")
+        self.input_source_hint.setObjectName("ExifInfoText")
+        self.input_source_hint.setWordWrap(True)
+
+        input_wrap = QVBoxLayout()
+        input_wrap.setContentsMargins(0, 0, 0, 0)
+        input_wrap.setSpacing(4)
+        input_wrap.addLayout(input_row)
+        input_wrap.addWidget(self.input_source_hint)
 
         output_row = QHBoxLayout()
         output_row.addWidget(self.output_dir_edit)
@@ -360,7 +394,7 @@ class MainWindow(QMainWindow):
         self.quality_spin = QSpinBox()
         self.quality_spin.setRange(1, 100)
 
-        form.addRow("输入目录", self._wrap_layout(input_row))
+        form.addRow("输入目录", self._wrap_layout(input_wrap))
         form.addRow("输出目录", self._wrap_layout(output_row))
         form.addRow("输出质量", self.quality_spin)
 
@@ -373,10 +407,14 @@ class MainWindow(QMainWindow):
         self.layout_combo = QComboBox()
         self.logo_enable_check = QCheckBox("启用 Logo")
         self.default_logo_combo = QComboBox()
+        self.logo_exif_info = QLabel("EXIF：等待加载预览图")
+        self.logo_exif_info.setObjectName("ExifInfoText")
+        self.logo_exif_info.setWordWrap(True)
 
         form.addRow("布局样式", self.layout_combo)
         form.addRow("Logo 开关", self.logo_enable_check)
         form.addRow("默认 Logo", self.default_logo_combo)
+        form.addRow("Logo EXIF", self.logo_exif_info)
         return group
 
     def _build_element_group(self) -> QGroupBox:
@@ -398,7 +436,18 @@ class MainWindow(QMainWindow):
                 "combo": combo,
                 "custom": custom_edit,
             }
-            form.addRow(location_name, self._wrap_layout(row))
+
+            exif_label = QLabel("EXIF：等待加载预览图")
+            exif_label.setObjectName("ExifInfoText")
+            exif_label.setWordWrap(True)
+            self.element_exif_labels[location_key] = exif_label
+
+            row_wrap = QVBoxLayout()
+            row_wrap.setContentsMargins(0, 0, 0, 0)
+            row_wrap.setSpacing(4)
+            row_wrap.addLayout(row)
+            row_wrap.addWidget(exif_label)
+            form.addRow(location_name, self._wrap_layout(row_wrap))
 
         return group
 
@@ -633,11 +682,21 @@ class MainWindow(QMainWindow):
                 border-radius: 8px;
                 padding: 5px 8px;
             }
+            QLabel#ExifInfoText {
+                color: #3a4f59;
+                background: #f8fbfc;
+                border: 1px solid #dbe7ec;
+                border-radius: 7px;
+                padding: 4px 8px;
+                font-size: 12px;
+            }
             """
         )
 
     def _bind_events(self) -> None:
         self.input_browse_btn.clicked.connect(self._browse_input_dir)
+        self.input_files_btn.clicked.connect(self._browse_input_files)
+        self.clear_files_btn.clicked.connect(self._clear_input_files)
         self.output_browse_btn.clicked.connect(self._browse_output_dir)
 
         self.save_btn.clicked.connect(self._save_config)
@@ -646,7 +705,7 @@ class MainWindow(QMainWindow):
         self.video_run_btn.clicked.connect(self._start_video)
 
         # 任意配置变化都会触发预览防抖刷新。
-        self.input_dir_edit.textChanged.connect(self._schedule_realtime_preview)
+        self.input_dir_edit.textChanged.connect(self._on_input_dir_text_changed)
         self.output_dir_edit.textChanged.connect(self._schedule_realtime_preview)
         self.quality_spin.valueChanged.connect(self._schedule_realtime_preview)
         self.layout_combo.currentIndexChanged.connect(self._schedule_realtime_preview)
@@ -690,6 +749,7 @@ class MainWindow(QMainWindow):
             custom_edit.setText(element_state.get("custom_value", ""))
             self._toggle_custom_input(location_key)
 
+        self._refresh_preview_source_from_input_dir(state["input_dir"])
         self._schedule_realtime_preview()
 
         self._append_log("配置已加载，可直接开始处理。")
@@ -724,6 +784,7 @@ class MainWindow(QMainWindow):
             "input_dir": self.input_dir_edit.text().strip(),
             "output_dir": self.output_dir_edit.text().strip(),
             "quality": int(self.quality_spin.value()),
+            "source_files": self.selected_source_files.copy(),
             "layout_type": self.layout_combo.currentData(),
             "logo_enable": self.logo_enable_check.isChecked(),
             "default_logo_path": self.default_logo_combo.currentData(),
@@ -735,9 +796,12 @@ class MainWindow(QMainWindow):
         }
 
     def _validate_settings(self, settings: dict) -> tuple[bool, str]:
-        input_dir = Path(settings["input_dir"])
-        if not input_dir.exists() or not input_dir.is_dir():
-            return False, "输入目录不存在，请检查路径。"
+        source_files = normalize_source_files(settings.get("source_files") or [])
+        settings["source_files"] = [str(p) for p in source_files]
+        if not source_files:
+            input_dir = Path(settings["input_dir"])
+            if not input_dir.exists() or not input_dir.is_dir():
+                return False, "输入目录不存在，请检查路径。"
 
         output_dir = settings["output_dir"]
         if output_dir:
@@ -914,12 +978,43 @@ class MainWindow(QMainWindow):
     def _browse_input_dir(self) -> None:
         selected = QFileDialog.getExistingDirectory(self, "选择输入目录", self.input_dir_edit.text().strip() or ".")
         if selected:
+            self.selected_source_files = []
             self.input_dir_edit.setText(selected)
+            self._refresh_preview_source_from_input_dir(selected)
+            self._schedule_realtime_preview()
+
+    def _browse_input_files(self) -> None:
+        selected_files, _ = QFileDialog.getOpenFileNames(
+            self,
+            "选择待处理图片",
+            self.input_dir_edit.text().strip() or ".",
+            "Image Files (*.jpg *.jpeg *.png *.JPG *.JPEG *.PNG)",
+        )
+        if not selected_files:
+            return
+
+        self.selected_source_files = selected_files
+        first_parent = str(Path(selected_files[0]).parent)
+        self.input_dir_edit.setText(first_parent)
+        self.current_preview_source = Path(selected_files[0])
+        self._update_input_source_hint()
+        self._schedule_realtime_preview()
+
+    def _clear_input_files(self) -> None:
+        self.selected_source_files = []
+        self.current_preview_source = None
+        self._refresh_preview_source_from_input_dir(self.input_dir_edit.text().strip())
+        self._schedule_realtime_preview()
 
     def _browse_output_dir(self) -> None:
         selected = QFileDialog.getExistingDirectory(self, "选择输出目录", self.output_dir_edit.text().strip() or ".")
         if selected:
             self.output_dir_edit.setText(selected)
+
+    def _on_input_dir_text_changed(self, text: str) -> None:
+        if not self.selected_source_files:
+            self._refresh_preview_source_from_input_dir(text.strip())
+        self._schedule_realtime_preview()
 
     def _on_element_combo_changed(self, location_key: str) -> None:
         self._toggle_custom_input(location_key)
@@ -947,10 +1042,12 @@ class MainWindow(QMainWindow):
             self.preview_pending = True
             return
 
-        if not PREVIEW_IMAGE_PATH.exists() or not PREVIEW_IMAGE_PATH.is_file():
+        preview_source = self._resolve_preview_source_path()
+        if preview_source is None:
             self.after_preview_label.set_preview_pixmap(None)
-            self.preview_meta_label.setText("预览区：未找到固定示例图，无法生成实时预览。")
-            self.preview_status_label.setText(f"状态：缺少示例图 {PREVIEW_IMAGE_PATH}")
+            self.preview_meta_label.setText("预览区：未找到可用图片，无法生成实时预览。")
+            self.preview_status_label.setText("状态：请先选择输入目录或图片")
+            self._clear_exif_info_panels()
             return
 
         self.preview_busy = True
@@ -958,18 +1055,22 @@ class MainWindow(QMainWindow):
         after_image = None
         try:
             settings = self._collect_form_settings()
-            before_image, after_image, _message = build_preview_images(PREVIEW_IMAGE_PATH, settings)
+            before_image, after_image, _message = build_preview_images(preview_source, settings)
+            exif_preview = get_image_exif_preview(preview_source, settings)
 
             after_pixmap = self._pil_to_qpixmap(after_image)
 
             self.after_preview_label.set_preview_pixmap(after_pixmap)
+            self.preview_path_label.setText(str(preview_source))
             self.preview_meta_label.setText(
-                f"示例图：{PREVIEW_IMAGE_PATH.name} | 预览尺寸：{after_image.width}x{after_image.height}"
+                f"预览图：{preview_source.name} | 预览尺寸：{after_image.width}x{after_image.height}"
             )
+            self._update_exif_info_panels(exif_preview)
             self.preview_status_label.setText("状态：实时预览已更新")
         except Exception as exc:
             self.preview_status_label.setText(f"状态：实时预览失败：{exc}")
             self._append_log(f"实时预览失败：{exc}")
+            self._clear_exif_info_panels()
         finally:
             if before_image is not None:
                 before_image.close()
@@ -1035,10 +1136,50 @@ class MainWindow(QMainWindow):
         """
 
     @staticmethod
-    def _wrap_layout(layout: QHBoxLayout) -> QWidget:
+    def _wrap_layout(layout) -> QWidget:
         widget = QWidget()
         widget.setLayout(layout)
         return widget
+
+    def _refresh_preview_source_from_input_dir(self, input_dir: str) -> None:
+        self.current_preview_source = None
+        if input_dir:
+            source_files = get_source_file_list(input_dir)
+            if source_files:
+                self.current_preview_source = source_files[0]
+        self._update_input_source_hint()
+
+    def _resolve_preview_source_path(self) -> Path | None:
+        if self.selected_source_files:
+            current = Path(self.selected_source_files[0])
+            if current.exists() and current.is_file():
+                self.current_preview_source = current
+                return current
+
+        if self.current_preview_source is not None and self.current_preview_source.exists() and self.current_preview_source.is_file():
+            return self.current_preview_source
+
+        if PREVIEW_IMAGE_PATH.exists() and PREVIEW_IMAGE_PATH.is_file():
+            return PREVIEW_IMAGE_PATH
+        return None
+
+    def _update_input_source_hint(self) -> None:
+        if self.selected_source_files:
+            self.input_source_hint.setText(f"当前来源：已选择 {len(self.selected_source_files)} 张图片（预览首张）")
+            return
+        preview_name = self.current_preview_source.name if self.current_preview_source else "无"
+        self.input_source_hint.setText(f"当前来源：输入目录（预览：{preview_name}）")
+
+    def _update_exif_info_panels(self, exif_preview: dict) -> None:
+        self.logo_exif_info.setText(f"EXIF：{exif_preview.get('logo', '--')}")
+        element_info = exif_preview.get("elements", {})
+        for location, label in self.element_exif_labels.items():
+            label.setText(f"EXIF：{element_info.get(location, '--')}")
+
+    def _clear_exif_info_panels(self) -> None:
+        self.logo_exif_info.setText("EXIF：等待加载预览图")
+        for label in self.element_exif_labels.values():
+            label.setText("EXIF：等待加载预览图")
 
 
 def main() -> None:
