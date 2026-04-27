@@ -5,21 +5,17 @@ from datetime import datetime
 from pathlib import Path
 import os
 
-# 允许通过 `python qt_gui/main_gui.py` 直接启动。
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 QT_GUI_ROOT = Path(__file__).resolve().parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+if str(QT_GUI_ROOT) not in sys.path:
+    sys.path.insert(0, str(QT_GUI_ROOT))
 
-# 优先使用 qt_gui 目录下的独立配置文件，确保 GUI 可单独打包运行。
+# 使用 qt_gui 目录下的独立配置文件，确保 GUI 可作为独立项目运行和打包。
 if 'SEMI_UTILS_CONFIG' not in os.environ:
     bundled_config = QT_GUI_ROOT.joinpath('config.yaml')
-    fallback_config = PROJECT_ROOT.joinpath('config.yaml')
     if bundled_config.exists():
         os.environ['SEMI_UTILS_CONFIG'] = str(bundled_config)
-    elif fallback_config.exists():
-        os.environ['SEMI_UTILS_CONFIG'] = str(fallback_config)
 
+from PySide6.QtCore import QEvent
 from PySide6.QtCore import QObject
 from PySide6.QtCore import Qt
 from PySide6.QtCore import QThread
@@ -112,22 +108,29 @@ class ImagePreviewLabel(QLabel):
 
 
 class NoWheelComboBox(QComboBox):
-    """仅在聚焦时响应滚轮，避免页面滚动时误改选项。"""
+    """禁用滚轮改选项，仅允许点击选择。"""
+
+    def __init__(self):
+        super().__init__()
+        self.view().installEventFilter(self)
+        self.view().viewport().installEventFilter(self)
 
     def wheelEvent(self, event) -> None:  # noqa: N802
-        if self.hasFocus() or self.view().isVisible():
-            super().wheelEvent(event)
-            return
         event.ignore()
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        if event.type() == QEvent.Type.Wheel and (
+            watched is self.view() or watched is self.view().viewport()
+        ):
+            event.ignore()
+            return True
+        return super().eventFilter(watched, event)
 
 
 class NoWheelSpinBox(QSpinBox):
-    """仅在聚焦时响应滚轮，避免页面滚动时误改数值。"""
+    """禁用滚轮改数值，仅允许点击或键盘输入。"""
 
     def wheelEvent(self, event) -> None:  # noqa: N802
-        if self.hasFocus():
-            super().wheelEvent(event)
-            return
         event.ignore()
 
 
@@ -228,8 +231,6 @@ class MainWindow(QMainWindow):
         self.resize(1360, 860)
 
         icon_path = QT_GUI_ROOT.joinpath("logo.ico")
-        if not icon_path.exists():
-            icon_path = PROJECT_ROOT.joinpath("logo.ico")
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
 
@@ -313,7 +314,7 @@ class MainWindow(QMainWindow):
         project_info.setObjectName("HeaderMetaText")
         project_info.setOpenExternalLinks(True)
 
-        integrator_info = QLabel("GUI整合：Sakura")
+        integrator_info = QLabel("GUI整合：https://github.com/Sakura-erii-L/semi-utils.git")
         integrator_info.setObjectName("HeaderMetaText")
 
         header_layout.addWidget(title)
@@ -596,7 +597,7 @@ class MainWindow(QMainWindow):
         return group
 
     def _build_preview_group(self) -> QGroupBox:
-        group = QGroupBox("示例图预览（实时）")
+        group = QGroupBox("图片预览（实时）")
         form = QFormLayout(group)
 
         self.preview_path_label = QLabel(str(PREVIEW_IMAGE_PATH))
@@ -606,7 +607,7 @@ class MainWindow(QMainWindow):
         self.preview_status_label = QLabel("状态：等待实时预览")
         self.preview_status_label.setObjectName("PreviewTipText")
 
-        form.addRow("固定示例图", self.preview_path_label)
+        form.addRow("预览图片", self.preview_path_label)
         form.addRow("状态", self.preview_status_label)
         return group
 
@@ -616,7 +617,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(12)
 
-        self.preview_meta_label = QLabel("预览区：固定示例图 qt_gui/example.jpg（仅展示应用当前设置后的效果）。")
+        self.preview_meta_label = QLabel("预览区：优先使用已选择图片或输入目录中的第一张图片。")
         self.preview_meta_label.setObjectName("PreviewTipText")
 
         after_group = QGroupBox("应用当前设置后的预览图")
@@ -1313,7 +1314,7 @@ class MainWindow(QMainWindow):
         <p>1. 在 <b>路径与质量</b> 中设置输入目录与输出目录。</p>
         <p>2. 在 <b>布局与 Logo</b> 选择需要的布局和 Logo 开关。</p>
         <p>3. 在 <b>四角文字元素</b> 配置左上/右上/左下/右下显示内容。</p>
-        <p>4. 修改任意设置后，系统会基于固定示例图 <b>qt_gui/example.jpg</b> 自动刷新预览。</p>
+        <p>4. 修改任意设置后，系统会基于已选择图片或输入目录中的第一张图片自动刷新预览。</p>
         <p>5. 点击 <b>开始批处理</b>，进度与结果会显示在日志面板。</p>
 
         <h3>二、功能分区说明</h3>
@@ -1349,7 +1350,18 @@ class MainWindow(QMainWindow):
         self._update_input_source_hint()
 
     def _resolve_preview_source_path(self) -> Path | None:
-        # 预览区固定使用 qt_gui/example.jpg，不随输入目录或选图变化。
+        source_files = normalize_source_files(self.selected_source_files)
+        if source_files:
+            return source_files[0]
+
+        if self.current_preview_source is not None and self.current_preview_source.exists():
+            return self.current_preview_source
+
+        self._refresh_preview_source_from_input_dir(self.input_dir_edit.text().strip())
+        if self.current_preview_source is not None and self.current_preview_source.exists():
+            return self.current_preview_source
+
+        # 没有可用输入图时，保留内置示例图作为兜底，避免首次启动预览为空。
         if PREVIEW_IMAGE_PATH.exists() and PREVIEW_IMAGE_PATH.is_file():
             return PREVIEW_IMAGE_PATH
         return None
@@ -1391,11 +1403,14 @@ class MainWindow(QMainWindow):
             label.setText("EXIF：等待加载预览图")
 
     def closeEvent(self, event) -> None:  # noqa: N802
-        # 关闭窗口时自动保存当前界面配置，便于下次启动直接沿用。
+        # 关闭窗口时自动保存当前界面配置，但不保留上次输入来源。
         self._set_realtime_preview_paused(True, "窗口关闭中，实时预览已停止")
         self._teardown_preview_thread()
         try:
-            apply_runtime_config_from_values(self._collect_form_settings(), save=True)
+            settings = self._collect_form_settings()
+            settings["input_dir"] = ""
+            settings["source_files"] = []
+            apply_runtime_config_from_values(settings, save=True)
         except Exception as exc:
             self._append_log(f"关闭时自动保存配置失败：{exc}")
         super().closeEvent(event)

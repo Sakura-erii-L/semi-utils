@@ -17,26 +17,13 @@ dependencies = [
 ]
 
 [project.scripts]
-semi-utils-qt-gui = "qt_gui.main_gui:main"
+semi-utils-qt-gui = "main_gui:main"
 
 [tool.setuptools]
-package-dir = {"" = ".."}
-py-modules = ["gen_video", "init", "utils"]
+py-modules = ["main_gui", "semi_bridge", "gen_video", "init", "utils"]
 include-package-data = true
 
 [tool.setuptools.packages.find]
-where = [".."]
-include = ["qt_gui", "entity", "enums"]
-
-[tool.setuptools.package-data]
-qt_gui = [
-  "config.yaml",
-  "example.jpg",
-  "logo.ico",
-  "fonts/*",
-  "logos/*",
-  "exiftool/*",
-  "logs/*"
-]
-
+where = ["."]
+include = ["entity", "entity.*", "enums", "enums.*"]
 
