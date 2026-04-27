@@ -1,13 +1,27 @@
 from __future__ import annotations
 
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 import os
+from queue import Empty
+from queue import Full
+from queue import Queue
 
 QT_GUI_ROOT = Path(__file__).resolve().parent
 if str(QT_GUI_ROOT) not in sys.path:
     sys.path.insert(0, str(QT_GUI_ROOT))
+
+if hasattr(os, "add_dll_directory"):
+    for dll_dir in (
+        QT_GUI_ROOT,
+        QT_GUI_ROOT.joinpath("PySide6"),
+        QT_GUI_ROOT.joinpath("shiboken6"),
+        QT_GUI_ROOT.joinpath("PIL"),
+    ):
+        if dll_dir.exists():
+            os.add_dll_directory(str(dll_dir))
 
 # 使用 qt_gui 目录下的独立配置文件，确保 GUI 可作为独立项目运行和打包。
 if 'SEMI_UTILS_CONFIG' not in os.environ:
@@ -22,6 +36,7 @@ from PySide6.QtCore import QThread
 from PySide6.QtCore import QTimer
 from PySide6.QtCore import Signal
 from PySide6.QtCore import Slot
+from PySide6 import QtCore as _QtCore
 from PySide6.QtGui import QFont
 from PySide6.QtGui import QImage
 from PySide6.QtGui import QIcon
@@ -68,6 +83,28 @@ LOCATION_LABELS = {
 }
 
 PREVIEW_IMAGE_PATH = Path(__file__).resolve().parent.joinpath("example.jpg")
+PREVIEW_MAX_SIDE = 960
+
+
+def _disable_broken_nuitka_pyside_signal_patch() -> None:
+    post_load_module = sys.modules.get("PySide6-postLoad")
+    if post_load_module is None:
+        return
+
+    orig_connect = getattr(post_load_module, "orig_connect", None)
+    if orig_connect is not None:
+        _QtCore.SignalInstance.connect = orig_connect
+
+    orig_disconnect = getattr(post_load_module, "orig_disconnect", None)
+    if orig_disconnect is not None:
+        _QtCore.SignalInstance.disconnect = orig_disconnect
+
+    orig_single_shot = getattr(post_load_module, "orig_singleShot", None)
+    if orig_single_shot is not None:
+        _QtCore.QTimer.singleShot = orig_single_shot
+
+
+_disable_broken_nuitka_pyside_signal_patch()
 
 
 class ImagePreviewLabel(QLabel):
@@ -200,31 +237,7 @@ class VideoWorker(QObject):
             self.crashed.emit(str(exc))
 
 
-class PreviewWorker(QObject):
-    """实时预览线程工作对象。"""
-
-    rendered = Signal(int, str, object, object, str)
-    failed = Signal(int, str)
-
-    @Slot(int, str, object)
-    def render_preview(self, request_id: int, preview_source: str, settings: object) -> None:
-        after_image = None
-        try:
-            render_settings = settings if isinstance(settings, dict) else {}
-            after_image, exif_preview, message = build_preview_image_with_exif(preview_source, render_settings)
-            self.rendered.emit(request_id, preview_source, after_image, exif_preview, message)
-        except Exception as exc:
-            if after_image is not None:
-                try:
-                    after_image.close()
-                except Exception:
-                    pass
-            self.failed.emit(request_id, str(exc))
-
-
 class MainWindow(QMainWindow):
-    preview_request = Signal(int, str, object)
-
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Semi-Utils Qt 图形界面")
@@ -238,8 +251,8 @@ class MainWindow(QMainWindow):
         self.processing_worker: ProcessWorker | None = None
         self.video_thread: QThread | None = None
         self.video_worker: VideoWorker | None = None
-        self.preview_thread: QThread | None = None
-        self.preview_worker: PreviewWorker | None = None
+        self.preview_executor: ThreadPoolExecutor | None = None
+        self.preview_results: Queue[tuple[str, int, str, object, object, str]] = Queue(maxsize=1)
         self.realtime_preview_paused = False
         self.preview_busy = False
         self.preview_pending = False
@@ -252,12 +265,17 @@ class MainWindow(QMainWindow):
         self.preview_timer.setSingleShot(True)
         self.preview_timer.timeout.connect(self._refresh_preview_now)
 
+        self.preview_result_timer = QTimer(self)
+        self.preview_result_timer.setInterval(30)
+        self.preview_result_timer.timeout.connect(self._drain_preview_results)
+
         self._setup_preview_thread()
 
         self.element_controls: dict[str, dict[str, QWidget]] = {}
         self.element_exif_labels: dict[str, QLabel] = {}
         self.selected_source_files: list[str] = []
         self.current_preview_source: Path | None = None
+        self.logo_auto_selected_source: str | None = None
 
         self._build_ui()
         self._apply_styles()
@@ -265,33 +283,21 @@ class MainWindow(QMainWindow):
         self._load_config_to_form()
 
     def _setup_preview_thread(self) -> None:
-        if self.preview_thread is not None:
-            return
-
-        self.preview_thread = QThread(self)
-        self.preview_worker = PreviewWorker()
-        self.preview_worker.moveToThread(self.preview_thread)
-
-        self.preview_request.connect(self.preview_worker.render_preview)
-        self.preview_worker.rendered.connect(self._on_preview_rendered)
-        self.preview_worker.failed.connect(self._on_preview_failed)
-
-        self.preview_thread.finished.connect(self.preview_worker.deleteLater)
-        self.preview_thread.start()
+        self.preview_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="preview-render")
+        self.preview_result_timer.start()
 
     def _teardown_preview_thread(self) -> None:
         self.preview_timer.stop()
+        self.preview_result_timer.stop()
         self.preview_pending = False
         self.preview_pending_source = None
         self.preview_pending_settings = None
         self.preview_latest_request_id += 1
 
-        if self.preview_thread is not None:
-            self.preview_thread.quit()
-            self.preview_thread.wait()
-            self.preview_thread.deleteLater()
-            self.preview_thread = None
-        self.preview_worker = None
+        if self.preview_executor is not None:
+            self.preview_executor.shutdown(wait=False, cancel_futures=True)
+            self.preview_executor = None
+        self._close_queued_preview_images()
 
     def _build_ui(self) -> None:
         central = QWidget()
@@ -314,7 +320,8 @@ class MainWindow(QMainWindow):
         project_info.setObjectName("HeaderMetaText")
         project_info.setOpenExternalLinks(True)
 
-        integrator_info = QLabel("GUI整合：https://github.com/Sakura-erii-L/semi-utils.git")
+        integrator_info = QLabel("GUI整合：<a href=\"https://github.com/Sakura-erii-L/semi-utils\">"
+            "https://github.com/Sakura-erii-L/semi-utils</a>")
         integrator_info.setObjectName("HeaderMetaText")
 
         header_layout.addWidget(title)
@@ -400,7 +407,7 @@ class MainWindow(QMainWindow):
         tips.setHtml(
             """
             <h3>视频生成说明</h3>
-            <p>1. 会读取当前输出目录中的 jpg/jpeg 图片。</p>
+            <p>1. 会读取当前输出目录中的 jpg/jpeg/png 图片。</p>
             <p>2. 若存在 <b>bgm.mp3</b>，会自动尝试添加背景音乐。</p>
             <p>3. 若系统中没有 ffmpeg，工具会按原项目逻辑尝试下载。</p>
             <p>4. 控制台输出会同步显示在右侧日志面板。</p>
@@ -1200,17 +1207,89 @@ class MainWindow(QMainWindow):
         self._dispatch_preview_request(preview_source, settings)
 
     def _dispatch_preview_request(self, preview_source: Path, settings: dict) -> None:
-        if self.preview_worker is None or self.preview_thread is None:
-            self._setup_preview_thread()
-        if self.preview_worker is None:
-            return
-
         self.preview_request_id += 1
         request_id = self.preview_request_id
         self.preview_latest_request_id = request_id
         self.preview_busy = True
         self.preview_status_label.setText("状态：正在渲染实时预览...")
-        self.preview_request.emit(request_id, str(preview_source), settings)
+        if self.preview_executor is None:
+            self.preview_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="preview-render")
+            self.preview_result_timer.start()
+
+        self.preview_executor.submit(
+            self._render_preview_background,
+            self.preview_results,
+            request_id,
+            str(preview_source),
+            settings.copy(),
+        )
+
+    @staticmethod
+    def _render_preview_background(
+        result_queue: Queue,
+        request_id: int,
+        preview_source: str,
+        settings: dict,
+    ) -> None:
+        after_image = None
+        try:
+            after_image, exif_preview, message = build_preview_image_with_exif(
+                preview_source,
+                settings,
+                max_side=PREVIEW_MAX_SIDE,
+            )
+            preview_data = MainWindow._pil_to_preview_rgba(after_image)
+            MainWindow._put_latest_preview_result(
+                result_queue,
+                ("rendered", request_id, preview_source, preview_data, exif_preview, message),
+            )
+        except Exception as exc:
+            MainWindow._put_latest_preview_result(
+                result_queue,
+                ("failed", request_id, preview_source, None, None, str(exc)),
+            )
+        finally:
+            if after_image is not None:
+                try:
+                    after_image.close()
+                except Exception:
+                    pass
+
+    @staticmethod
+    def _put_latest_preview_result(result_queue: Queue, result: tuple[str, int, str, object, object, str]) -> None:
+        while True:
+            try:
+                result_queue.get_nowait()
+            except Empty:
+                break
+        try:
+            result_queue.put_nowait(result)
+        except Full:
+            pass
+
+    @staticmethod
+    def _pil_to_preview_rgba(image) -> tuple[bytes, int, int]:
+        rgba_image = image.convert("RGBA")
+        return rgba_image.tobytes("raw", "RGBA"), rgba_image.width, rgba_image.height
+
+    def _drain_preview_results(self) -> None:
+        while True:
+            try:
+                kind, request_id, preview_source, preview_data, exif_preview, message = self.preview_results.get_nowait()
+            except Empty:
+                break
+
+            if kind == "rendered":
+                self._on_preview_rendered(request_id, preview_source, preview_data, exif_preview, message)
+            else:
+                self._on_preview_failed(request_id, message)
+
+    def _close_queued_preview_images(self) -> None:
+        while True:
+            try:
+                self.preview_results.get_nowait()
+            except Empty:
+                break
 
     def _dispatch_pending_preview_if_needed(self) -> None:
         if not self.preview_pending:
@@ -1237,26 +1316,32 @@ class MainWindow(QMainWindow):
         self,
         request_id: int,
         preview_source: str,
-        after_image,
+        preview_data,
         exif_preview,
         _message: str,
     ) -> None:
         try:
             if request_id != self.preview_latest_request_id:
                 return
+            if self.preview_pending:
+                self.preview_status_label.setText("状态：正在刷新最新预览...")
+                return
 
             source_path = Path(preview_source)
-            after_pixmap = self._pil_to_qpixmap(after_image)
+            preview_size = (0, 0)
+            if isinstance(preview_data, tuple) and len(preview_data) == 3:
+                preview_size = (int(preview_data[1]), int(preview_data[2]))
+            after_pixmap = self._preview_rgba_to_qpixmap(preview_data)
 
             self.after_preview_label.set_preview_pixmap(after_pixmap)
             self.preview_path_label.setText(str(source_path))
             self.preview_meta_label.setText(
-                f"预览图：{source_path.name} | 预览尺寸：{after_image.width}x{after_image.height}"
+                f"预览图：{source_path.name} | 预览尺寸：{preview_size[0]}x{preview_size[1]}"
             )
 
             preview_exif = exif_preview if isinstance(exif_preview, dict) else {}
             self._update_exif_info_panels(preview_exif)
-            self._auto_select_logo_from_exif(preview_exif)
+            self._auto_select_logo_once_for_source(source_path, preview_exif)
             self.preview_status_label.setText("状态：实时预览已更新")
         except Exception as exc:
             if request_id == self.preview_latest_request_id:
@@ -1264,16 +1349,11 @@ class MainWindow(QMainWindow):
                 self._append_log(f"实时预览失败：{exc}")
                 self._clear_exif_info_panels()
         finally:
-            if after_image is not None:
-                try:
-                    after_image.close()
-                except Exception:
-                    pass
             self.preview_busy = False
             self._dispatch_pending_preview_if_needed()
 
     def _on_preview_failed(self, request_id: int, message: str) -> None:
-        if request_id == self.preview_latest_request_id:
+        if request_id == self.preview_latest_request_id and not self.preview_pending:
             self.preview_status_label.setText(f"状态：实时预览失败：{message}")
             self._append_log(f"实时预览失败：{message}")
             self._clear_exif_info_panels()
@@ -1301,10 +1381,13 @@ class MainWindow(QMainWindow):
         self.log_output.append(f"[{timestamp}] {text}")
 
     @staticmethod
-    def _pil_to_qpixmap(image) -> QPixmap:
-        rgba_image = image.convert("RGBA")
-        data = rgba_image.tobytes("raw", "RGBA")
-        q_image = QImage(data, rgba_image.width, rgba_image.height, QImage.Format.Format_RGBA8888)
+    def _preview_rgba_to_qpixmap(preview_data) -> QPixmap:
+        if not isinstance(preview_data, tuple) or len(preview_data) != 3:
+            raise ValueError("预览图数据无效")
+        data, width, height = preview_data
+        if not isinstance(data, bytes) or width <= 0 or height <= 0:
+            raise ValueError("预览图数据无效")
+        q_image = QImage(data, width, height, QImage.Format.Format_RGBA8888)
         return QPixmap.fromImage(q_image.copy())
 
     def _build_guide_html(self) -> str:
@@ -1384,18 +1467,26 @@ class MainWindow(QMainWindow):
         for location, label in self.element_exif_labels.items():
             label.setText(f"EXIF：{element_info.get(location, '--')}")
 
-    def _auto_select_logo_from_exif(self, exif_preview: dict) -> None:
+    def _auto_select_logo_once_for_source(self, source_path: Path, exif_preview: dict) -> None:
+        source_key = str(source_path.resolve())
+        if self.logo_auto_selected_source == source_key:
+            return
+
         logo_info = exif_preview.get("logo", {}) if isinstance(exif_preview, dict) else {}
         if not isinstance(logo_info, dict):
+            self.logo_auto_selected_source = source_key
             return
 
         matched_logo_path = str(logo_info.get("matched_logo_path", "") or "").strip()
         if not matched_logo_path:
+            self.logo_auto_selected_source = source_key
             return
 
         idx = self.default_logo_combo.findData(matched_logo_path)
         if idx >= 0 and self.default_logo_combo.currentIndex() != idx:
             self.default_logo_combo.setCurrentIndex(idx)
+
+        self.logo_auto_selected_source = source_key
 
     def _clear_exif_info_panels(self) -> None:
         self.logo_exif_info.setText("EXIF：等待加载预览图")

@@ -1,0 +1,64 @@
+﻿
+[1/7] Root directory: F:\A_none_huawei\Photograph\Tools\semi-utils\qt_gui
+[INFO] Cleaning previous release output and temporary files...
+[2/7] Selecting Python environment...
+[INFO] Python source: BUILD_PYTHON
+[INFO] Python executable: D:\Programs\Miniforge3\envs\torch_env\python.exe
+[3/7] Installing build dependencies...
+[CMD] D:\Programs\Miniforge3\envs\torch_env\python.exe -c "import importlib.util, sys; modules=['nuitka','ordered_set','zstandard','PIL','yaml','dateutil','requests','PySide6']; missing=[m for m in modules if importlib.util.find_spec(m) is None]; print('Missing:', ', '.join(missing) if missing else 'none'); sys.exit(1 if missing else 0)"
+Missing: none
+[CMD] D:\Programs\Miniforge3\envs\torch_env\python.exe -c "import sys; print('Python:', sys.version); print('Executable:', sys.executable); from PySide6.QtCore import qVersion; print('PySide6 Qt:', qVersion())"
+Python: 3.12.13 | packaged by conda-forge | (main, Mar  5 2026, 16:36:12) [MSC v.1944 64 bit (AMD64)]
+Executable: D:\Programs\Miniforge3\envs\torch_env\python.exe
+PySide6 Qt: 6.10.2
+[4/7] Verifying config.yaml has no local absolute paths...
+[CMD] D:\Programs\Miniforge3\envs\torch_env\python.exe -c "from pathlib import Path; import re, sys; p=Path('config.yaml'); bad=[line for line in p.read_text(encoding='utf-8').splitlines() if re.search(r'[A-Za-z]:[\\/]', line)]; print('\n'.join(bad)); sys.exit(1 if bad else 0)"
+
+[5/7] Cleaning previous build output...
+[6/7] Building portable standalone release with Nuitka...
+[INFO] Release mode: standalone folder with SemiUtilsQt.exe. This keeps startup faster than one-file extraction.
+[INFO] Windows console mode: force
+[INFO] Loading Visual Studio build environment: D:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat
+[CMD] D:\Programs\Miniforge3\envs\torch_env\python.exe -m nuitka --standalone --assume-yes-for-downloads --enable-plugin=pyside6 --windows-console-mode=force --windows-icon-from-ico=logo.ico --output-dir=F:\A_none_huawei\Photograph\Tools\semi-utils\qt_gui\temp\run-20260427-231244-23804\nuitka --output-filename=SemiUtilsQt.exe --include-data-file=config.yaml=config.yaml --include-data-file=example.jpg=example.jpg --include-data-file=logo.ico=logo.ico --include-data-dir=logos=logos --include-data-dir=exiftool=exiftool --include-data-file=fonts\Roboto-Regular.ttf=fonts\Roboto-Regular.ttf --include-data-file=fonts\Roboto-Bold.ttf=fonts\Roboto-Bold.ttf --include-data-file=fonts\Roboto-Light.ttf=fonts\Roboto-Light.ttf --include-data-file=fonts\Roboto-Medium.ttf=fonts\Roboto-Medium.ttf --nofollow-import-to=tkinter --nofollow-import-to=matplotlib --nofollow-import-to=numpy main_gui.py
+Nuitka-Options: Used command line options:
+Nuitka-Options:   --standalone --assume-yes-for-downloads --enable-plugin=pyside6 --windows-console-mode=force --windows-icon-from-ico=logo.ico --output-dir=F:\A_none_huawei\Photograph\Tools\semi-utils\qt_gui\temp\run-20260427-231244-23804\nuitka --output-filename=SemiUtilsQt.exe --include-data-file=config.yaml=config.yaml --include-data-file=example.jpg=example.jpg --include-data-file=logo.ico=logo.ico --include-data-dir=logos=logos --include-data-dir=exiftool=exiftool --include-data-file=fonts\Roboto-Regular.ttf=fonts\Roboto-Regular.ttf --include-data-file=fonts\Roboto-Bold.ttf=fonts\Roboto-Bold.ttf --include-data-file=fonts\Roboto-Light.ttf=fonts\Roboto-Light.ttf --include-data-file=fonts\Roboto-Medium.ttf=fonts\Roboto-Medium.ttf --nofollow-import-to=tkinter --nofollow-import-to=matplotlib --nofollow-import-to=numpy main_gui.py
+Nuitka: Starting Python compilation with:
+Nuitka:   Version '4.0.8' on Python 3.12 (flavor 'Anaconda Python') commercial grade 'not installed'.
+Nuitka-Options:WARNING: No data files in directory 'exiftool'.
+Nuitka-Plugins:pyside6: Including Qt plugins 'iconengines,imageformats,platforms,styles,tls' below 'PySide6\qt-plugins'.
+Nuitka: Downloading 'https://dependencywalker.com/depends22_x64.zip'.
+Nuitka: Extracting to 'F:\A_none_huawei\Photograph\Tools\semi-utils\qt_gui\temp\run-20260427-231244-23804\nuitka-cache\downloads\depends\x86_64\depends.exe'
+Nuitka: Completed Python level compilation and optimization.
+Nuitka: Generating source code for C backend compiler.
+Nuitka: Running data composer tool for optimal constant value handling.
+Nuitka: Running C compilation via Scons.
+Nuitka-Scons: Backend C compiler: cl (cl 14.3).
+Nuitka-Scons: Backend C linking with 246 files (no progress information available for this stage).
+Nuitka-Scons: Compiled 246 C files using clcache with 0 cache hits and 246 cache misses.
+Nuitka-Postprocessing: Adding 9 icon(s) from icon file 'logo.ico'.
+Nuitka-Options: Included data file 'config.yaml' due to specified data file 'config.yaml=config.yaml' on command line.
+Nuitka-Options: Included data file 'example.jpg' due to specified data file 'example.jpg=example.jpg' on command line.
+Nuitka-Options: Included data file 'logo.ico' due to specified data file 'logo.ico=logo.ico' on command line.
+Nuitka-Options: Included data file 'fonts\Roboto-Regular.ttf' due to specified data file 'fonts\Roboto-Regular.ttf=fonts\Roboto-Regular.ttf' on command line.
+Nuitka-Options: Included data file 'fonts\Roboto-Bold.ttf' due to specified data file 'fonts\Roboto-Bold.ttf=fonts\Roboto-Bold.ttf' on command line.
+Nuitka-Options: Included data file 'fonts\Roboto-Light.ttf' due to specified data file 'fonts\Roboto-Light.ttf=fonts\Roboto-Light.ttf' on command line.
+Nuitka-Options: Included data file 'fonts\Roboto-Medium.ttf' due to specified data file 'fonts\Roboto-Medium.ttf=fonts\Roboto-Medium.ttf' on command line.
+Nuitka-Options: Included 19 data files due to specified data dir 'logos' on command line.
+Nuitka-Plugins:data-files: Included data file 'certifi\cacert.pem' due to package data for 'certifi'.
+Nuitka: Keeping build directory 'F:\A_none_huawei\Photograph\Tools\semi-utils\qt_gui\temp\run-20260427-231244-23804\nuitka\main_gui.build'.
+Nuitka: Successfully created 'F:\A_none_huawei\Photograph\Tools\semi-utils\qt_gui\temp\run-20260427-231244-23804\nuitka\main_gui.dist\SemiUtilsQt.exe'.
+[INFO] Nuitka dist folder: F:\A_none_huawei\Photograph\Tools\semi-utils\qt_gui\temp\run-20260427-231244-23804\nuitka\main_gui.dist
+[7/7] Preparing release folder and zip...
+[INFO] Copied 49 conda runtime DLL(s) from: D:\Programs\Miniforge3\envs\torch_env\Library\bin
+[CMD] powershell Compress-Archive
+
+[OK] Fast-start portable exe:
+     F:\A_none_huawei\Photograph\Tools\semi-utils\qt_gui\portable\SemiUtilsQt\SemiUtilsQt.exe
+[OK] Portable release folder:
+     F:\A_none_huawei\Photograph\Tools\semi-utils\qt_gui\portable\SemiUtilsQt
+[OK] Shareable zip:
+     F:\A_none_huawei\Photograph\Tools\semi-utils\qt_gui\portable\SemiUtilsQt-windows.zip
+[OK] Full build log:
+     F:\A_none_huawei\Photograph\Tools\semi-utils\qt_gui\build_release.log
+
+Test by extracting the zip to another folder and running SemiUtilsQt.exe.

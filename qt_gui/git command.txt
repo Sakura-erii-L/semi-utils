@@ -1,0 +1,2 @@
+git commit -m "before codex"
+git reset --hard HEAD

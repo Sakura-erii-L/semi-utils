@@ -322,13 +322,17 @@ def process_images(
     return summary
 
 
-def _resize_for_preview(image: PILImage.Image, max_side: int = 1200) -> PILImage.Image:
+def _resize_for_preview(image: PILImage.Image, max_side: int = 960) -> PILImage.Image:
     preview = image.copy()
     preview.thumbnail((max_side, max_side), PILImage.Resampling.LANCZOS)
     return preview
 
 
-def build_preview_images(sample_path: str | Path, values: dict) -> tuple[PILImage.Image, PILImage.Image, str]:
+def build_preview_images(
+    sample_path: str | Path,
+    values: dict,
+    max_side: int = 960,
+) -> tuple[PILImage.Image, PILImage.Image, str]:
     """基于当前设置处理一张示例图，并返回预览前后图像。"""
     sample_file = Path(sample_path)
     if not sample_file.exists() or not sample_file.is_file():
@@ -344,13 +348,13 @@ def build_preview_images(sample_path: str | Path, values: dict) -> tuple[PILImag
         container = ImageContainer(sample_file)
         container.is_use_equivalent_focal_length(config.use_equivalent_focal_length())
 
-        before = _resize_for_preview(container.get_img())
+        before = _resize_for_preview(container.get_img(), max_side=max_side)
 
         runtime_backup = _apply_photographer_runtime_mapping(container)
         processor_chain = _build_processor_chain()
         processor_chain.process(container)
 
-        after = _resize_for_preview(container.get_watermark_img())
+        after = _resize_for_preview(container.get_watermark_img(), max_side=max_side)
 
         message = f"预览完成：{sample_file.name}"
         return before, after, message
@@ -366,7 +370,11 @@ def build_preview_images(sample_path: str | Path, values: dict) -> tuple[PILImag
             _safe_close_container(container)
 
 
-def build_preview_image_with_exif(sample_path: str | Path, values: dict) -> tuple[PILImage.Image, dict, str]:
+def build_preview_image_with_exif(
+    sample_path: str | Path,
+    values: dict,
+    max_side: int = 960,
+) -> tuple[PILImage.Image, dict, str]:
     """基于当前设置处理一张示例图，并在同一次读取中返回处理后预览和 EXIF 预览。"""
     sample_file = Path(sample_path)
     if not sample_file.exists() or not sample_file.is_file():
@@ -387,7 +395,7 @@ def build_preview_image_with_exif(sample_path: str | Path, values: dict) -> tupl
         processor_chain = _build_processor_chain()
         processor_chain.process(container)
 
-        after = _resize_for_preview(container.get_watermark_img())
+        after = _resize_for_preview(container.get_watermark_img(), max_side=max_side)
 
         message = f"预览完成：{sample_file.name}"
         return after, exif_preview, message
@@ -486,6 +494,7 @@ def _restore_element_runtime_mapping(backup: dict[str, tuple[str, str]]) -> None
 def _resolve_logo_info(make: str) -> dict:
     logo_config = config.get_data().get("logo", {})
     makes = logo_config.get("makes", {})
+    default_logo = logo_config.get("default", {})
     normalized_make = (make or "").lower()
 
     for make_key, make_item in makes.items():
@@ -498,11 +507,13 @@ def _resolve_logo_info(make: str) -> dict:
                 "matched_logo_label": make_item.get("id") or make_key,
             }
 
+    default_path = default_logo.get("path", "")
+    default_label = default_logo.get("id", "") or Path(default_path).stem or "default"
     return {
         "make": make or "--",
-        "matched_logo_key": "",
-        "matched_logo_path": "",
-        "matched_logo_label": "",
+        "matched_logo_key": "default",
+        "matched_logo_path": default_path,
+        "matched_logo_label": default_label,
     }
 
 

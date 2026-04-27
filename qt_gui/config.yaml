@@ -43,7 +43,7 @@ layout:
   type: watermark_right_logo
 logo:
   default:
-    id: ''
+    id: NSP-W
     path: logos/nikon.png
   makes:
     apple:
@@ -56,7 +56,7 @@ logo:
       id: DJI
       path: logos/DJI.jpg
     empty:
-      id: "\u7A7A"
+      id: 空
       path: logos/empty.png
     fujifilm:
       id: FUJIFILM
@@ -73,6 +73,12 @@ logo:
     nikon:
       id: NIKON
       path: logos/nikon.png
+    nsp_w:
+      id: NSP-W
+      path: logos/nsp_w.png
+    nsp_y:
+      id: NSP-Y
+      path: logos/nsp_y.png
     olympus:
       id: Olympus
       path: logos/olympus_blue_gold.png

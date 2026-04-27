@@ -1,0 +1,372 @@
+import os
+import re
+from copy import deepcopy
+
+import yaml
+from PIL import Image
+from PIL import ImageFont
+
+from enums.constant import CUSTOM_VALUE
+from enums.constant import LOCATION_LEFT_BOTTOM
+from enums.constant import LOCATION_LEFT_TOP
+from enums.constant import LOCATION_RIGHT_BOTTOM
+from enums.constant import LOCATION_RIGHT_TOP
+
+from pathlib import Path
+
+from entity.menu import MenuItem
+
+
+class ElementConfig(object):
+    """
+    布局中元素的配置对象
+    """
+
+    def __init__(self, element):
+        self.element = element
+
+    def get_name(self):
+        return self.element['name']
+
+    def is_bold(self):
+        return self.element['is_bold']
+
+    def get_value(self):
+        return self.element['value'] if 'value' in self.element else None
+
+    def get_color(self):
+        if 'color' in self.element:
+            return self.element['color']
+        else:
+            return '#212121'
+
+
+# 字体大小，影响字体的清晰度
+FONT_SIZE = 240
+BOLD_FONT_SIZE = 260
+
+
+class Config(object):
+    """
+    配置对象
+    """
+
+    def __init__(self, path):
+        self._path = str(Path(path).resolve())
+        self._base_dir = Path(self._path).parent
+        with open(self._path, 'r', encoding='utf-8') as f:
+            self._data = yaml.safe_load(f)
+        self._normalize_asset_paths()
+        self._logos = {}
+        self._left_top = ElementConfig(self._data['layout']['elements'][LOCATION_LEFT_TOP])
+        self._left_bottom = ElementConfig(self._data['layout']['elements'][LOCATION_LEFT_BOTTOM])
+        self._right_top = ElementConfig(self._data['layout']['elements'][LOCATION_RIGHT_TOP])
+        self._right_bottom = ElementConfig(self._data['layout']['elements'][LOCATION_RIGHT_BOTTOM])
+        self._makes = self._data['logo']['makes']
+        self.bg_color = self._data['layout']['background_color'] \
+            if 'background_color' in self._data['layout'] \
+            else '#ffffff'
+
+    def _resolve_path(self, path_value: str) -> str:
+        path_obj = Path(path_value)
+        if path_obj.is_absolute():
+            return str(path_obj)
+        return str(self._base_dir.joinpath(path_obj).resolve())
+
+    def _normalize_asset_paths(self) -> None:
+        base_data = self._data.get('base', {})
+        for key in ('font', 'bold_font', 'alternative_font', 'alternative_bold_font'):
+            raw_value = base_data.get(key)
+            if isinstance(raw_value, str) and raw_value.strip() != '':
+                base_data[key] = self._resolve_path(raw_value)
+
+        logo_data = self._data.get('logo', {})
+        default_logo = logo_data.get('default', {})
+        default_path = default_logo.get('path')
+        if isinstance(default_path, str) and default_path.strip() != '':
+            default_logo['path'] = self._resolve_path(default_path)
+
+        for make_config in logo_data.get('makes', {}).values():
+            make_path = make_config.get('path')
+            if isinstance(make_path, str) and make_path.strip() != '':
+                make_config['path'] = self._resolve_path(make_path)
+
+    def get(self, key):
+        if key in self._data:
+            return self._data[key]
+        else:
+            return None
+
+    def get_or_default(self, key, default):
+        if key in self._data:
+            return self._data[key]
+        else:
+            return default
+
+    def set(self, key, value):
+        self._data[key] = value
+
+    def load_logo(self, make) -> Image.Image:
+        """
+        根据厂商获取 logo
+        :param make: 厂商
+        :return: logo
+        """
+        logo_path = self._data['logo']['default']['path']
+        if logo_path:
+            return Image.open(logo_path)
+
+        # 已经读到内存中的 logo
+        if make in self._logos:
+            return self._logos[make]
+        # 未读取到内存中的 logo
+        for m in self._makes.values():
+            if m['id'] == '':
+                pass
+            if m['id'].lower() in make.lower():
+                logo = Image.open(m['path'])
+                self._logos[make] = logo
+                return logo
+        logo_path = self._data['logo']['default']['path']
+        logo = Image.open(logo_path)
+        self._logos[make] = logo
+        return logo
+
+    def get_data(self) -> dict:
+        return self._data
+
+    def get_input_dir(self):
+        return self._data['base']['input_dir']
+
+    def get_output_dir(self):
+        output_dir = self._data['base']['output_dir']
+        if output_dir == '':
+            return output_dir
+        elif not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        return output_dir
+
+    def get_quality(self):
+        return self._data['base']['quality']
+
+    def get_alternative_font(self):
+        return ImageFont.truetype(self._data['base']['alternative_font'], self.get_font_size())
+
+    def get_alternative_bold_font(self):
+        return ImageFont.truetype(self._data['base']['alternative_bold_font'], self.get_bold_font_size())
+
+    def get_font(self):
+        return ImageFont.truetype(self._data['base']['font'], self.get_font_size())
+
+    def get_bold_font(self):
+        return ImageFont.truetype(self._data['base']['bold_font'], self.get_bold_font_size())
+
+    def get_font_size(self):
+        font_size = self._data['base']['font_size']
+        if font_size == 1:
+            return 240
+        elif font_size == 2:
+            return 250
+        elif font_size == 3:
+            return 300
+        else:
+            return 240
+
+    def get_bold_font_size(self):
+        font_size = self._data['base']['bold_font_size']
+        if font_size == 1:
+            return 260
+        elif font_size == 2:
+            return 290
+        elif font_size == 3:
+            return 320
+        else:
+            return 260
+
+    def get_font_padding_level(self):
+        bold_font_size = self._data['base']['bold_font_size'] if 1 <= self._data['base']['bold_font_size'] <= 3 else 1
+        font_size = self._data['base']['font_size'] if 1 <= self._data['base']['font_size'] <= 3 else 1
+        return bold_font_size + font_size
+
+    def _make_path_portable_for_save(self, path_value: str) -> str:
+        if not isinstance(path_value, str) or path_value.strip() == '':
+            return path_value
+
+        path_obj = Path(path_value)
+        if not path_obj.is_absolute():
+            return path_value.replace('\\', '/')
+
+        try:
+            return path_obj.resolve().relative_to(self._base_dir).as_posix()
+        except ValueError:
+            return str(path_obj)
+
+    def _get_portable_data_for_save(self) -> dict:
+        data = deepcopy(self._data)
+
+        base_data = data.get('base', {})
+        for key in ('font', 'bold_font', 'alternative_font', 'alternative_bold_font'):
+            base_data[key] = self._make_path_portable_for_save(base_data.get(key, ''))
+
+        logo_data = data.get('logo', {})
+        default_logo = logo_data.get('default', {})
+        default_logo['path'] = self._make_path_portable_for_save(default_logo.get('path', ''))
+        for make_config in logo_data.get('makes', {}).values():
+            make_config['path'] = self._make_path_portable_for_save(make_config.get('path', ''))
+
+        return data
+
+    def save(self):
+        with open(self._path, 'w', encoding='utf-8') as f:
+            yaml.safe_dump(self._get_portable_data_for_save(), f, allow_unicode=True, sort_keys=False)
+
+    def enable_shadow(self):
+        self._data['global']['shadow']['enable'] = True
+
+    def disable_shadow(self):
+        self._data['global']['shadow']['enable'] = False
+
+    def has_shadow_enabled(self):
+        return self._data['global']['shadow']['enable']
+
+    def has_white_margin_enabled(self):
+        return self._data['global']['white_margin']['enable']
+
+    def enable_white_margin(self):
+        self._data['global']['white_margin']['enable'] = True
+
+    def disable_white_margin(self):
+        self._data['global']['white_margin']['enable'] = False
+
+    def get_white_margin_width(self) -> int:
+        white_margin_width = self._data['global']['white_margin']['width']
+        if white_margin_width > 30:
+            white_margin_width = 30
+        if white_margin_width < 0:
+            white_margin_width = 0
+        self._data['global']['white_margin']['width'] = white_margin_width
+        return white_margin_width
+
+    def enable_equivalent_focal_length(self):
+        self._data['global']['focal_length']['use_equivalent_focal_length'] = True
+
+    def disable_equivalent_focal_length(self):
+        self._data['global']['focal_length']['use_equivalent_focal_length'] = False
+
+    def use_equivalent_focal_length(self):
+        return self._data['global']['focal_length']['use_equivalent_focal_length']
+
+    def enable_padding_with_original_ratio(self):
+        self._data['global']['padding_with_original_ratio']['enable'] = True
+
+    def disable_padding_with_original_ratio(self):
+        self._data['global']['padding_with_original_ratio']['enable'] = False
+
+    def has_padding_with_original_ratio_enabled(self):
+        return self._data['global']['padding_with_original_ratio']['enable']
+
+    def set_layout(self, layout):
+        self._data['layout']['type'] = layout
+
+    def get_background_color(self) -> str:
+        return self._data['layout']['background_color'] if 'background_color' in self._data['layout'] else '#ffffff'
+
+    def enable_logo(self):
+        self._data['layout']['logo_enable'] = True
+
+    def disable_logo(self):
+        self._data['layout']['logo_enable'] = False
+
+    def has_logo_enabled(self):
+        return self._data['layout']['logo_enable']
+
+    def is_logo_left(self):
+        if self._data['layout']['logo_position'] == 'left':
+            return True
+
+    def set_logo_left(self):
+        self._data['layout']['logo_position'] = 'left'
+
+    def set_logo_right(self):
+        self._data['layout']['logo_position'] = 'right'
+
+    def get_layout_type(self) -> str:
+        return self._data['layout']['type']
+
+    def get_left_top(self) -> ElementConfig:
+        return self._left_top
+
+    def get_left_bottom(self) -> ElementConfig:
+        return self._left_bottom
+
+    def get_right_top(self) -> ElementConfig:
+        return self._right_top
+
+    def get_right_bottom(self) -> ElementConfig:
+        return self._right_bottom
+
+    def get_custom_value(self, location):
+        if 'value' in self._data['layout']['elements'][location]:
+            return self._data['layout']['elements'][location]['value']
+        else:
+            return ''
+
+    def set_custom(self, location):
+        self._data['layout']['elements'][location]['name'] = 'Custom'
+        user_input = input('输入自定义字段的值（上次使用的值为：{}）\n'.format(self.get_custom_value(location)))
+        self._data['layout']['elements'][location]['value'] = user_input
+
+    def set_element_name(self, location, name):
+        if CUSTOM_VALUE == name:
+            self.set_custom(location)
+        else:
+            self._data['layout']['elements'][location]['name'] = name
+
+    def set_default_logo_path(self, logo_path):
+        self._data["logo"]['default']['path'] = logo_path
+        self.save()
+
+    # 更新输入路径
+    def update_input_dir(self, path_menu: MenuItem):
+        dir_path = input('请输入新的待处理文件夹路径：')
+        if os.path.exists(dir_path):
+            self._data['base']['input_dir'] = dir_path
+            path_menu._name = f'【新功能】修改input路径,当前路径：{dir_path}'
+        else:
+            print('文件夹不存在，路径未改变')
+
+    # 更新输出路径
+    def update_output_dir(self, path_menu: MenuItem):
+        dir_path = input('请输入新的文件保存路径(直接回车则保存在input文件夹中)：')
+        if dir_path == '':
+            self._data['base']['output_dir'] = dir_path
+            path_menu._name = f'【新功能】修改output路径,当前路径：{dir_path}'
+        elif is_valid_path(dir_path):
+            self._data['base']['output_dir'] = dir_path
+            path_menu._name = f'【新功能】修改output路径,当前路径：{dir_path}'
+        else:
+            print(f"文件夹路径不规范或其他原因，设置失败。")
+
+
+def is_valid_path(path_str):
+    # 检查路径是否包含非法字符
+    invalid_chars = r'[<>:"/\\|?*]' if os.name == 'nt' else r'[:]'
+
+    if re.search(invalid_chars, path_str):
+        return False
+
+    # 检查路径长度是否超过系统限制
+    if len(path_str) > 260:
+        return False
+
+    # 检查路径是否指向一个已存在的文件
+    if os.path.exists(path_str) and not os.path.isdir(path_str):
+        return False
+
+    # 尝试创建路径（需要相应的权限）
+    try:
+        Path(path_str).mkdir(parents=True, exist_ok=True)
+        print(f"文件夹 {path_str} 已创建。")
+        return True
+    except OSError:
+        return False
