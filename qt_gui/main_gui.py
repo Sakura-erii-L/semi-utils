@@ -74,6 +74,7 @@ from semi_bridge import get_runtime_config_snapshot
 from semi_bridge import get_source_file_list
 from semi_bridge import normalize_source_files
 from semi_bridge import process_images
+import utils as runtime_utils
 
 LOCATION_LABELS = {
     "left_top": "左上角",
@@ -235,7 +236,7 @@ class MainWindow(QMainWindow):
         self.video_thread: QThread | None = None
         self.video_worker: VideoWorker | None = None
         self.preview_executor: ThreadPoolExecutor | None = None
-        self.preview_results: Queue[tuple[str, int, str, object, object, str, object]] = Queue(maxsize=1)
+        self.preview_results: Queue[tuple[str, int, str, object, object, object, str, object]] = Queue(maxsize=1)
         self.realtime_preview_paused = False
         self.preview_busy = False
         self.preview_pending = False
@@ -246,6 +247,9 @@ class MainWindow(QMainWindow):
         self.preview_active_signature: tuple[str, str] | None = None
         self.preview_pending_signature: tuple[str, str] | None = None
         self.preview_last_rendered_signature: tuple[str, str] | None = None
+        self.preview_exif_source_key: str | None = None
+        self.preview_exif_source_token: tuple[int, int] | None = None
+        self.preview_exif_data: dict | None = None
 
         self.preview_timer = QTimer(self)
         self.preview_timer.setSingleShot(True)
@@ -286,6 +290,9 @@ class MainWindow(QMainWindow):
         self.preview_active_signature = None
         self.preview_pending_signature = None
         self.preview_last_rendered_signature = None
+        self.preview_exif_source_key = None
+        self.preview_exif_source_token = None
+        self.preview_exif_data = None
         self.preview_latest_request_id += 1
 
         if self.preview_executor is not None:
@@ -1248,6 +1255,7 @@ class MainWindow(QMainWindow):
             str(preview_source),
             settings.copy(),
             signature,
+            self._get_preview_exif_from_memory(preview_source),
         )
 
     @staticmethod
@@ -1257,23 +1265,25 @@ class MainWindow(QMainWindow):
         preview_source: str,
         settings: dict,
         signature: tuple[str, str] | None,
+        source_exif: dict | None,
     ) -> None:
         after_image = None
         try:
-            after_image, exif_preview, message = build_preview_image_with_exif(
+            after_image, exif_preview, raw_exif, message = build_preview_image_with_exif(
                 preview_source,
                 settings,
                 max_side=PREVIEW_MAX_SIDE,
+                exif=source_exif,
             )
             preview_data = MainWindow._pil_to_preview_rgba(after_image)
             MainWindow._put_latest_preview_result(
                 result_queue,
-                ("rendered", request_id, preview_source, preview_data, exif_preview, message, signature),
+                ("rendered", request_id, preview_source, preview_data, exif_preview, raw_exif, message, signature),
             )
         except Exception as exc:
             MainWindow._put_latest_preview_result(
                 result_queue,
-                ("failed", request_id, preview_source, None, None, str(exc), signature),
+                ("failed", request_id, preview_source, None, None, None, str(exc), signature),
             )
         finally:
             if after_image is not None:
@@ -1283,7 +1293,7 @@ class MainWindow(QMainWindow):
                     pass
 
     @staticmethod
-    def _put_latest_preview_result(result_queue: Queue, result: tuple[str, int, str, object, object, str, object]) -> None:
+    def _put_latest_preview_result(result_queue: Queue, result: tuple[str, int, str, object, object, object, str, object]) -> None:
         while True:
             try:
                 result_queue.get_nowait()
@@ -1305,17 +1315,52 @@ class MainWindow(QMainWindow):
         settings_key = json.dumps(settings, sort_keys=True, ensure_ascii=False, default=str)
         return source_key, settings_key
 
+    @staticmethod
+    def _preview_source_identity(preview_source: Path) -> tuple[str, tuple[int, int]] | None:
+        try:
+            resolved = preview_source.resolve()
+            stat = resolved.stat()
+        except OSError:
+            return None
+        return str(resolved), (stat.st_mtime_ns, stat.st_size)
+
+    def _get_preview_exif_from_memory(self, preview_source: Path) -> dict | None:
+        identity = self._preview_source_identity(preview_source)
+        if identity is None or self.preview_exif_data is None:
+            return None
+        source_key, source_token = identity
+        if source_key != self.preview_exif_source_key or source_token != self.preview_exif_source_token:
+            return None
+        return self.preview_exif_data.copy()
+
+    def _store_preview_exif(self, preview_source: Path, raw_exif) -> None:
+        if not isinstance(raw_exif, dict):
+            return
+        identity = self._preview_source_identity(preview_source)
+        if identity is None:
+            return
+        self.preview_exif_source_key, self.preview_exif_source_token = identity
+        self.preview_exif_data = raw_exif.copy()
+
     def _drain_preview_results(self) -> None:
         while True:
             try:
-                kind, request_id, preview_source, preview_data, exif_preview, message, signature = (
+                kind, request_id, preview_source, preview_data, exif_preview, raw_exif, message, signature = (
                     self.preview_results.get_nowait()
                 )
             except Empty:
                 break
 
             if kind == "rendered":
-                self._on_preview_rendered(request_id, preview_source, preview_data, exif_preview, message, signature)
+                self._on_preview_rendered(
+                    request_id,
+                    preview_source,
+                    preview_data,
+                    exif_preview,
+                    raw_exif,
+                    message,
+                    signature,
+                )
             else:
                 self._on_preview_failed(request_id, message)
 
@@ -1377,17 +1422,19 @@ class MainWindow(QMainWindow):
         preview_source: str,
         preview_data,
         exif_preview,
+        raw_exif,
         _message: str,
         signature,
     ) -> None:
         try:
             if request_id != self.preview_latest_request_id:
                 return
+            source_path = Path(preview_source)
+            self._store_preview_exif(source_path, raw_exif)
             if self.preview_pending:
                 self.preview_status_label.setText("状态：正在刷新最新预览...")
                 return
 
-            source_path = Path(preview_source)
             preview_size = (0, 0)
             if isinstance(preview_data, tuple) and len(preview_data) == 3:
                 preview_size = (int(preview_data[1]), int(preview_data[2]))
@@ -1568,6 +1615,9 @@ class MainWindow(QMainWindow):
             apply_runtime_config_from_values(settings, save=True)
         except Exception as exc:
             self._append_log(f"关闭时自动保存配置失败：{exc}")
+        close_exiftool_session = getattr(runtime_utils, "close_exiftool_session", None)
+        if callable(close_exiftool_session):
+            close_exiftool_session()
         super().closeEvent(event)
 
 

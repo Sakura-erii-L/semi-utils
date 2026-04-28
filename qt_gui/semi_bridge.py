@@ -348,8 +348,20 @@ def _get_cached_preview_exif(sample_file: Path) -> dict:
     return exif
 
 
-def _build_preview_container(sample_file: Path, max_side: int) -> ImageContainer:
-    container = ImageContainer(sample_file, exif=_get_cached_preview_exif(sample_file))
+def _create_image_container(sample_file: Path, exif: dict | None = None) -> ImageContainer:
+    if exif is None:
+        return ImageContainer(sample_file)
+    try:
+        return ImageContainer(sample_file, exif=exif)
+    except TypeError as exc:
+        if "unexpected keyword argument 'exif'" not in str(exc):
+            raise
+        logger.warning("ImageContainer does not accept cached EXIF; falling back to direct EXIF read.")
+        return ImageContainer(sample_file)
+
+
+def _build_preview_container(sample_file: Path, max_side: int, exif: dict | None = None) -> ImageContainer:
+    container = _create_image_container(sample_file, exif if exif is not None else _get_cached_preview_exif(sample_file))
     image = container.get_img()
     if max(image.width, image.height) <= max_side:
         return container
@@ -366,6 +378,7 @@ def build_preview_images(
     sample_path: str | Path,
     values: dict,
     max_side: int = 960,
+    exif: dict | None = None,
 ) -> tuple[PILImage.Image, PILImage.Image, str]:
     """基于当前设置处理一张示例图，并返回预览前后图像。"""
     sample_file = Path(sample_path)
@@ -379,7 +392,7 @@ def build_preview_images(
     after = None
     runtime_backup: dict[str, tuple[str, str]] = {}
     try:
-        container = _build_preview_container(sample_file, max_side)
+        container = _build_preview_container(sample_file, max_side, exif=exif)
         container.is_use_equivalent_focal_length(config.use_equivalent_focal_length())
 
         before = _resize_for_preview(container.get_img(), max_side=max_side)
@@ -408,7 +421,8 @@ def build_preview_image_with_exif(
     sample_path: str | Path,
     values: dict,
     max_side: int = 960,
-) -> tuple[PILImage.Image, dict, str]:
+    exif: dict | None = None,
+) -> tuple[PILImage.Image, dict, dict, str]:
     """基于当前设置处理一张示例图，并在同一次读取中返回处理后预览和 EXIF 预览。"""
     sample_file = Path(sample_path)
     if not sample_file.exists() or not sample_file.is_file():
@@ -419,8 +433,9 @@ def build_preview_image_with_exif(
     container = None
     after = None
     runtime_backup: dict[str, tuple[str, str]] = {}
+    source_exif = exif.copy() if exif is not None else _get_cached_preview_exif(sample_file)
     try:
-        container = _build_preview_container(sample_file, max_side)
+        container = _build_preview_container(sample_file, max_side, exif=source_exif)
         container.is_use_equivalent_focal_length(config.use_equivalent_focal_length())
 
         exif_preview = _collect_exif_preview_from_container(container)
@@ -432,7 +447,7 @@ def build_preview_image_with_exif(
         after = _resize_for_preview(container.get_watermark_img(), max_side=max_side)
 
         message = f"预览完成：{sample_file.name}"
-        return after, exif_preview, message
+        return after, exif_preview, source_exif.copy(), message
     except Exception as exc:
         if after is not None:
             after.close()
@@ -587,7 +602,7 @@ def get_image_exif_preview(sample_path: str | Path, values: dict) -> dict:
 
     container = None
     try:
-        container = ImageContainer(sample_file, exif=_get_cached_preview_exif(sample_file))
+        container = _create_image_container(sample_file, _get_cached_preview_exif(sample_file))
         container.is_use_equivalent_focal_length(config.use_equivalent_focal_length())
         return _collect_exif_preview_from_container(container)
     finally:

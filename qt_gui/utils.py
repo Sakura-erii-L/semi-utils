@@ -1,8 +1,10 @@
 import logging
+import atexit
 import platform
 import re
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 
 from PIL import Image
@@ -46,6 +48,7 @@ if platform.system() == 'Windows':
     _WINDOWS_NO_WINDOW_KWARGS['creationflags'] = subprocess.CREATE_NO_WINDOW
     startupinfo = subprocess.STARTUPINFO()
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
     _WINDOWS_NO_WINDOW_KWARGS['startupinfo'] = startupinfo
 
 logger = logging.getLogger(__name__)
@@ -57,6 +60,86 @@ def subprocess_no_window_kwargs() -> dict:
 
 def check_output_no_window(args):
     return subprocess.check_output(args, **subprocess_no_window_kwargs())
+
+
+class ExifToolSession:
+    def __init__(self):
+        self._process: subprocess.Popen | None = None
+        self._lock = threading.RLock()
+
+    def _start_locked(self) -> None:
+        if self._process is not None and self._process.poll() is None:
+            return
+
+        self._process = subprocess.Popen(
+            [EXIFTOOL_PATH, '-stay_open', 'True', '-@', '-'],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding='utf-8',
+            errors='ignore',
+            **subprocess_no_window_kwargs(),
+        )
+
+    def execute(self, args: list[str | Path]) -> str:
+        with self._lock:
+            try:
+                self._start_locked()
+                if self._process is None or self._process.stdin is None or self._process.stdout is None:
+                    raise RuntimeError('exiftool stay_open session is unavailable')
+
+                command = ''.join(f'{arg}\n' for arg in args)
+                self._process.stdin.write(command)
+                self._process.stdin.write('-execute\n')
+                self._process.stdin.flush()
+
+                lines: list[str] = []
+                while True:
+                    line = self._process.stdout.readline()
+                    if line == '':
+                        raise RuntimeError('exiftool stay_open session closed unexpectedly')
+                    if line.strip().startswith('{ready'):
+                        break
+                    lines.append(line)
+                return ''.join(lines)
+            except Exception:
+                self.close()
+                raise
+
+    def close(self) -> None:
+        with self._lock:
+            process = self._process
+            self._process = None
+            if process is None:
+                return
+            try:
+                if process.poll() is None and process.stdin is not None:
+                    process.stdin.write('-stay_open\nFalse\n')
+                    process.stdin.flush()
+            except Exception:
+                pass
+            try:
+                process.wait(timeout=2)
+            except Exception:
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+
+
+_EXIFTOOL_SESSION = ExifToolSession()
+
+
+def close_exiftool_session() -> None:
+    _EXIFTOOL_SESSION.close()
+
+
+atexit.register(close_exiftool_session)
+
+
+def send_exiftool_command(args: list[str | Path]) -> str:
+    return _EXIFTOOL_SESSION.execute(args)
 
 
 def get_file_list(path):
@@ -78,8 +161,11 @@ def get_exif(path) -> dict:
     """
     exif_dict = {}
     try:
-        output_bytes = check_output_no_window([EXIFTOOL_PATH, '-d', '%Y-%m-%d %H:%M:%S%3f%z', path])
-        output = output_bytes.decode('utf-8', errors='ignore')
+        try:
+            output = send_exiftool_command(['-d', '%Y-%m-%d %H:%M:%S%3f%z', path])
+        except Exception:
+            output_bytes = check_output_no_window([EXIFTOOL_PATH, '-d', '%Y-%m-%d %H:%M:%S%3f%z', path])
+            output = output_bytes.decode('utf-8', errors='ignore')
 
         lines = output.splitlines()
         utf8_lines = [line for line in lines]

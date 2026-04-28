@@ -1,10 +1,9 @@
 import glob
 import os
-import platform
+import shutil
 import subprocess
-import sys
-import time
 from datetime import datetime
+from pathlib import Path
 
 import requests as requests
 from tqdm import tqdm
@@ -12,23 +11,28 @@ from utils import subprocess_no_window_kwargs
 
 
 def get_ffmpeg_path():
-    if platform.system() == "Windows":
-        ffmpeg_local_path = "./bin/ffmpeg.exe"
-        if os.path.exists(ffmpeg_local_path):
-            if os.path.exists(ffmpeg_local_path):
-                return os.path.abspath(ffmpeg_local_path)  # 返回ffmpeg的绝对路径
-        # 尝试使用 where 获取 ffmpeg 路径
-        ffmpeg_path = subprocess.getoutput("where ffmpeg")
-        if "ffmpeg" in ffmpeg_path:
-            return ffmpeg_path.split('\n')[0]  # 取第一个结果
-        return None
-    else:
-        ffmpeg_path = subprocess.getoutput("which ffmpeg")
-        if "ffmpeg" in ffmpeg_path:
-            return ffmpeg_path
-        elif os.path.exists("./bin/ffmpeg"):
-            return "./bin/ffmpeg"
-        return None
+    local_names = ["ffmpeg.exe", "ffmpeg"] if os.name == "nt" else ["ffmpeg"]
+    for local_name in local_names:
+        ffmpeg_local_path = Path("bin", local_name)
+        if ffmpeg_local_path.exists():
+            return str(ffmpeg_local_path.resolve())
+
+    return shutil.which("ffmpeg")
+
+
+def _run_ffmpeg(command: list[str]) -> tuple[int, str, str]:
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        shell=False,
+        text=True,
+        encoding='utf-8',
+        errors='replace',
+        **subprocess_no_window_kwargs(),
+    )
+    stdout, stderr = process.communicate()
+    return process.returncode, stdout or "", stderr or ""
 
 
 def download_ffmpeg(target_path):
@@ -93,16 +97,27 @@ def generate_video(path, gap_time=2):
         for filename in sorted(files):
             f.write(f"file '{filename}'\n")
 
-    command = f'"{ffmpeg_path}" -f concat -safe 0 -r 1/{gap_time} -i temp.txt -vf "scale=3840:2160:force_original_aspect_ratio=decrease,pad=3840:2160:(ow-iw)/2:(oh-ih)/2:color=white" -c:v libx264 -r 24 -pix_fmt yuv420p -color_range 1 "{output_file}"'
+    command = [
+        ffmpeg_path,
+        '-f', 'concat',
+        '-safe', '0',
+        '-r', f'1/{gap_time}',
+        '-i', 'temp.txt',
+        '-vf', 'scale=3840:2160:force_original_aspect_ratio=decrease,pad=3840:2160:(ow-iw)/2:(oh-ih)/2:color=white',
+        '-c:v', 'libx264',
+        '-r', '24',
+        '-pix_fmt', 'yuv420p',
+        '-color_range', '1',
+        output_file,
+    ]
 
-    # 开启新的线程来执行命令
-    process = subprocess.Popen(command, shell=True, encoding='utf-8', **subprocess_no_window_kwargs())
-
-    stdout, stderr = process.communicate()
-    if process.returncode == 0:
+    returncode, stdout, stderr = _run_ffmpeg(command)
+    if returncode == 0:
         print("\ro 视频拼接成功，输出至：" + output_file)
     else:
         print("\r- 视频拼接失败，错误信息：", stderr)
+        if stdout:
+            print(stdout)
         return
 
     # 检查是否存在 bgm.mp3 文件
@@ -110,27 +125,26 @@ def generate_video(path, gap_time=2):
     final_output_file = output_file
     if os.path.exists(bgm_path):
         temp_output_file = os.path.join(path, f"temp_{current_time}.mp4")
-        command_bgm = f'"{ffmpeg_path}" -i "{output_file}" -i "{bgm_path}" -c:v copy -c:a aac -map 0:v:0 -map 1:a:0 -shortest "{temp_output_file}"'
+        command_bgm = [
+            ffmpeg_path,
+            '-i', output_file,
+            '-i', bgm_path,
+            '-c:v', 'copy',
+            '-c:a', 'aac',
+            '-map', '0:v:0',
+            '-map', '1:a:0',
+            '-shortest',
+            temp_output_file,
+        ]
 
-        # 开启新的线程来执行命令
-        process = subprocess.Popen(command_bgm, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                   encoding='utf-8', **subprocess_no_window_kwargs())
-
-        # 转动字符显示
-        spinning_chars = ['-', '\\', '|', '/']
-        idx = 0
-        while process.poll() is None:  # 当命令正在执行时
-            sys.stdout.write('\r' + spinning_chars[idx % len(spinning_chars)])
-            sys.stdout.flush()
-            time.sleep(0.1)
-            idx += 1
-
-        stdout, stderr = process.communicate()
-        if process.returncode == 0:
+        returncode, stdout, stderr = _run_ffmpeg(command_bgm)
+        if returncode == 0:
             final_output_file = temp_output_file
             print("\ro 视频附加 bgm 成功，输出至：" + temp_output_file)
         else:
             print("\r- 视频附加 bgm 失败，错误信息：", stderr)
+            if stdout:
+                print(stdout)
     else:
         print("\r- 未找到 bgm.mp3 文件，跳过附加 bgm 步骤。")
 
