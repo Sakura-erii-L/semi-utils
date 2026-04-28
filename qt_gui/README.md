@@ -74,7 +74,7 @@ output_dir: output
 
 1. 手选图片的第一张
 2. 输入目录中的第一张支持图片
-3. `example.jpg` 兜底
+3. `example.jpg` 兜底；portable 版本中该图会内置进 exe，运行时释放到系统临时目录用于预览
 
 ## 预览线程
 
@@ -173,7 +173,7 @@ portable/SemiUtilsQt/
 portable/SemiUtilsQt-windows.zip
 ```
 
-默认使用 PyInstaller onedir/windowed 模式。直接打开 exe 不会弹出控制台；运行依赖和资源会放在 `portable/SemiUtilsQt/` 中，脚本会额外确保 `logo.ico`、`logos/` 和 `exiftool/` 被复制到便携目录，zip 只用于分享压缩。
+默认使用 PyInstaller onedir/windowed 模式。直接打开 exe 不会弹出控制台；运行依赖和资源会放在 `portable/SemiUtilsQt/` 中，脚本会额外确保 `logo.ico`、`logos/` 和 `exiftool/` 被复制到便携目录。默认预览图 `example.jpg` 会作为内置资源收进 exe，不会显式出现在 portable 目录中；zip 只用于分享压缩。
 
 构建日志：
 
@@ -198,5 +198,5 @@ temp/
 - 改默认 Logo：修改 `config.yaml -> logo.default.path`。
 - 改预览来源：看 `main_gui._resolve_preview_source_path()`。
 - 改支持格式：看 `semi_bridge.SUPPORTED_SUFFIXES`。
-- 改打包资源：看 `build_release.bat` 的 PyInstaller `--add-data` 参数。
+- 改打包资源：看 `build_release.bat` 的 PyInstaller `--add-data` 参数；默认预览图由 `generate_embedded_example_asset` 内置到 exe。
 - 保持便携性：不要把 `config.yaml` 中的资源路径改成本机绝对路径。

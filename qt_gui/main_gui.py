@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import json
@@ -76,6 +77,11 @@ from semi_bridge import normalize_source_files
 from semi_bridge import process_images
 import utils as runtime_utils
 
+try:
+    import semi_embedded_example_asset as embedded_example_asset
+except ImportError:
+    embedded_example_asset = None
+
 LOCATION_LABELS = {
     "left_top": "左上角",
     "right_top": "右上角",
@@ -83,11 +89,36 @@ LOCATION_LABELS = {
     "right_bottom": "右下角",
 }
 
-PREVIEW_IMAGE_PATH = Path(__file__).resolve().parent.joinpath("example.jpg")
+PREVIEW_IMAGE_PATH = QT_GUI_ROOT.joinpath("example.jpg")
 PREVIEW_MAX_SIDE = 720
 PREVIEW_DEBOUNCE_MS = 500
 PREVIEW_RESULT_POLL_MS = 80
 PREVIEW_PENDING_DISPATCH_DELAY_MS = 120
+
+
+def _resolve_embedded_preview_image_path() -> Path | None:
+    if embedded_example_asset is None:
+        return None
+
+    get_bytes = getattr(embedded_example_asset, "get_example_jpg_bytes", None)
+    if not callable(get_bytes):
+        return None
+
+    digest = str(getattr(embedded_example_asset, "EXAMPLE_JPG_SHA256", "") or "")[:12]
+    expected_size = int(getattr(embedded_example_asset, "EXAMPLE_JPG_SIZE", 0) or 0)
+    cache_name = f"example-{digest or 'embedded'}.jpg"
+    cache_path = Path(tempfile.gettempdir()).joinpath("SemiUtilsQt", cache_name)
+
+    try:
+        if cache_path.exists() and cache_path.is_file():
+            if expected_size <= 0 or cache_path.stat().st_size == expected_size:
+                return cache_path
+
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_bytes(get_bytes())
+        return cache_path
+    except OSError:
+        return None
 
 
 class ImagePreviewLabel(QLabel):
@@ -608,14 +639,9 @@ class MainWindow(QMainWindow):
         group = QGroupBox("图片预览（实时）")
         form = QFormLayout(group)
 
-        self.preview_path_label = QLabel(str(PREVIEW_IMAGE_PATH))
-        self.preview_path_label.setObjectName("PreviewPathText")
-        self.preview_path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-
         self.preview_status_label = QLabel("状态：等待实时预览")
         self.preview_status_label.setObjectName("PreviewTipText")
 
-        form.addRow("预览图片", self.preview_path_label)
         form.addRow("状态", self.preview_status_label)
         return group
 
@@ -776,13 +802,6 @@ class MainWindow(QMainWindow):
             }
             QLabel#PreviewTipText {
                 color: #23434d;
-            }
-            QLabel#PreviewPathText {
-                color: #23434d;
-                background: #f4f8fa;
-                border: 1px solid #d0dde3;
-                border-radius: 8px;
-                padding: 5px 8px;
             }
             QLabel#ExifInfoText {
                 color: #3a4f59;
@@ -1441,7 +1460,6 @@ class MainWindow(QMainWindow):
             after_pixmap = self._preview_rgba_to_qpixmap(preview_data)
 
             self.after_preview_label.set_preview_pixmap(after_pixmap)
-            self.preview_path_label.setText(str(source_path))
             self.preview_meta_label.setText(
                 f"预览图：{source_path.name} | 预览尺寸：{preview_size[0]}x{preview_size[1]}"
             )
@@ -1558,7 +1576,8 @@ class MainWindow(QMainWindow):
         # 没有可用输入图时，保留内置示例图作为兜底，避免首次启动预览为空。
         if PREVIEW_IMAGE_PATH.exists() and PREVIEW_IMAGE_PATH.is_file():
             return PREVIEW_IMAGE_PATH
-        return None
+
+        return _resolve_embedded_preview_image_path()
 
     def _update_input_source_hint(self) -> None:
         if self.selected_source_files:

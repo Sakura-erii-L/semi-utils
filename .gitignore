@@ -10,3 +10,4 @@ build
 dist
 logs
 qt_gui/portable
+qt_gui/example.jpg

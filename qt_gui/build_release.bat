@@ -13,6 +13,9 @@ set "PYINSTALLER_CONFIG_DIR=%TEMP_DIR%\pyinstaller-cache"
 set "PORTABLE_ROOT=%ROOT_DIR%\portable"
 set "APP_DIR=%PORTABLE_ROOT%\SemiUtilsQt"
 set "ZIP_PATH=%PORTABLE_ROOT%\SemiUtilsQt-windows.zip"
+set "EMBEDDED_EXAMPLE_MODULE=semi_embedded_example_asset"
+set "EMBEDDED_EXAMPLE_SOURCE=%ROOT_DIR%\example.jpg"
+set "EMBEDDED_EXAMPLE_MODULE_PATH=%TEMP_DIR%\%EMBEDDED_EXAMPLE_MODULE%.py"
 set "CONDA_ENV_NAME=semi-utils"
 set "EXIT_CODE=1"
 
@@ -126,6 +129,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-ChildItem -LiteralPa
 if not exist "%BUILD_ROOT%" mkdir "%BUILD_ROOT%" >> "%LOG_FILE%" 2>&1
 if not exist "%PORTABLE_ROOT%" mkdir "%PORTABLE_ROOT%" >> "%LOG_FILE%" 2>&1
 
+call :generate_embedded_example_asset
+if errorlevel 1 (
+    set "EXIT_CODE=1"
+    goto :finish
+)
+
 call :log "Running PyInstaller onedir build."
 python -m PyInstaller ^
     --noconfirm ^
@@ -135,6 +144,8 @@ python -m PyInstaller ^
     --windowed ^
     --name SemiUtilsQt ^
     --paths "%ROOT_DIR%" ^
+    --paths "%TEMP_DIR%" ^
+    --hidden-import "%EMBEDDED_EXAMPLE_MODULE%" ^
     --icon "%ROOT_DIR%\logo.ico" ^
     --distpath "%PORTABLE_ROOT%" ^
     --workpath "%BUILD_ROOT%" ^
@@ -143,7 +154,6 @@ python -m PyInstaller ^
     --add-data "%ROOT_DIR%\logos;logos" ^
     --add-data "%ROOT_DIR%\exiftool;exiftool" ^
     --add-data "%ROOT_DIR%\config.yaml;." ^
-    --add-data "%ROOT_DIR%\example.jpg;." ^
     --add-data "%ROOT_DIR%\logo.ico;." ^
     main_gui.py >> "%LOG_FILE%" 2>&1
 if errorlevel 1 (
@@ -156,6 +166,12 @@ if errorlevel 1 (
 
 if not exist "%APP_DIR%\SemiUtilsQt.exe" (
     call :log "ERROR: SemiUtilsQt.exe was not found in PyInstaller output."
+    set "EXIT_CODE=1"
+    goto :finish
+)
+if exist "%APP_DIR%\example.jpg" (
+    call :log "ERROR: example.jpg exists in portable output; it should be embedded in the exe."
+    echo ERROR: example.jpg exists in portable output; it should be embedded in the exe.
     set "EXIT_CODE=1"
     goto :finish
 )
@@ -305,6 +321,29 @@ for %%D in (
 if exist "%APP_DIR%\utils.py" (
     call :log "ERROR: Stale utils.py remains in portable output and would shadow the packaged module."
     echo ERROR: Stale utils.py remains in portable output. See:
+    echo   %LOG_FILE%
+    exit /b 1
+)
+exit /b 0
+
+:generate_embedded_example_asset
+call :log "Generating embedded example.jpg asset module."
+if not exist "%EMBEDDED_EXAMPLE_SOURCE%" (
+    call :log "ERROR: example.jpg was not found: %EMBEDDED_EXAMPLE_SOURCE%"
+    echo ERROR: example.jpg was not found:
+    echo   %EMBEDDED_EXAMPLE_SOURCE%
+    exit /b 1
+)
+python -c "import base64, hashlib, os, textwrap; from pathlib import Path; src=Path(os.environ['EMBEDDED_EXAMPLE_SOURCE']); dest=Path(os.environ['EMBEDDED_EXAMPLE_MODULE_PATH']); data=src.read_bytes(); b64=base64.b64encode(data).decode('ascii'); lines=['from __future__ import annotations', '', 'import base64', '', 'EXAMPLE_JPG_NAME = ' + repr(src.name), 'EXAMPLE_JPG_SIZE = ' + str(len(data)), 'EXAMPLE_JPG_SHA256 = ' + repr(hashlib.sha256(data).hexdigest()), '_EXAMPLE_JPG_B64_CHUNKS = (']; lines += ['    ' + repr(chunk) + ',' for chunk in textwrap.wrap(b64, 65536)]; lines += [')', '', 'def get_example_jpg_bytes() -> bytes:', '    return base64.b64decode(str().join(_EXAMPLE_JPG_B64_CHUNKS))', '']; dest.parent.mkdir(parents=True, exist_ok=True); dest.write_text('\n'.join(lines), encoding='utf-8')" >> "%LOG_FILE%" 2>&1
+if errorlevel 1 (
+    call :log "ERROR: Failed to generate embedded example.jpg asset module."
+    echo ERROR: Failed to generate embedded example.jpg asset module. See:
+    echo   %LOG_FILE%
+    exit /b 1
+)
+if not exist "%EMBEDDED_EXAMPLE_MODULE_PATH%" (
+    call :log "ERROR: Embedded example asset module was not created."
+    echo ERROR: Embedded example asset module was not created. See:
     echo   %LOG_FILE%
     exit /b 1
 )
