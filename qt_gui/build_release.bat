@@ -1,9 +1,15 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 
-cd /d "%~dp0"
+set "SCRIPT_DIR=%~dp0"
+for %%I in ("%SCRIPT_DIR%.") do set "ROOT_DIR=%%~fI"
 
-set "ROOT_DIR=%CD%"
+cd /d "%ROOT_DIR%" || (
+    echo ERROR: Could not switch to script directory:
+    echo   %ROOT_DIR%
+    endlocal & exit /b 1
+)
+
 set "LOCK_DIR=%ROOT_DIR%\.build_release.lock"
 set "LOG_ROOT=%ROOT_DIR%\logs"
 set "LATEST_LOG_FILE=%LOG_ROOT%\build_release.log"
@@ -91,7 +97,7 @@ if /I "%SKIP_BUILD_DEPS%"=="1" (
     call :log "Skipping build dependency installation because SKIP_BUILD_DEPS=1."
 ) else (
     call :log "Installing or updating build dependencies."
-    python -m pip install --upgrade pip setuptools wheel pyinstaller >> "%LOG_FILE%" 2>&1
+    python -m pip install --upgrade pip setuptools wheel pyinstaller exifread >> "%LOG_FILE%" 2>&1
     if errorlevel 1 (
         call :log "ERROR: Failed to install build dependencies. See %LOG_FILE%."
         echo ERROR: Failed to install build dependencies. See:
@@ -105,6 +111,15 @@ python -c "import PyInstaller; print('PyInstaller', PyInstaller.__version__)" >>
 if errorlevel 1 (
     call :log "ERROR: PyInstaller is not available. Install it or run without SKIP_BUILD_DEPS=1."
     echo ERROR: PyInstaller is not available. Install it or run without SKIP_BUILD_DEPS=1.
+    set "EXIT_CODE=1"
+    goto :finish
+)
+
+python -c "import exifread; print('exifread', getattr(exifread, '__version__', 'unknown'))" >> "%LOG_FILE%" 2>&1
+if errorlevel 1 (
+    call :log "ERROR: exifread is not available. Install dependencies or run without SKIP_BUILD_DEPS=1."
+    echo ERROR: exifread is not available. See:
+    echo   %LOG_FILE%
     set "EXIT_CODE=1"
     goto :finish
 )
@@ -146,6 +161,7 @@ python -m PyInstaller ^
     --paths "%ROOT_DIR%" ^
     --paths "%TEMP_DIR%" ^
     --hidden-import "%EMBEDDED_EXAMPLE_MODULE%" ^
+    --hidden-import exifread ^
     --icon "%ROOT_DIR%\logo.ico" ^
     --distpath "%PORTABLE_ROOT%" ^
     --workpath "%BUILD_ROOT%" ^
@@ -181,6 +197,11 @@ if errorlevel 1 (
     set "EXIT_CODE=1"
     goto :finish
 )
+call :verify_no_stale_python_sources
+if errorlevel 1 (
+    set "EXIT_CODE=1"
+    goto :finish
+)
 
 call :copy_runtime_resources
 if errorlevel 1 (
@@ -189,6 +210,12 @@ if errorlevel 1 (
 )
 
 call :patch_portable_exiftool_subsystem
+if errorlevel 1 (
+    set "EXIT_CODE=1"
+    goto :finish
+)
+
+call :verify_no_stale_python_sources
 if errorlevel 1 (
     set "EXIT_CODE=1"
     goto :finish
@@ -311,6 +338,9 @@ for %%F in (
 ) do (
     if exist "%APP_DIR%\%%F" del /f /q "%APP_DIR%\%%F" >> "%LOG_FILE%" 2>&1
 )
+for %%F in ("%APP_DIR%\*.py") do (
+    if exist "%%~fF" del /f /q "%%~fF" >> "%LOG_FILE%" 2>&1
+)
 for %%D in (
     entity
     enums
@@ -321,6 +351,45 @@ for %%D in (
 if exist "%APP_DIR%\utils.py" (
     call :log "ERROR: Stale utils.py remains in portable output and would shadow the packaged module."
     echo ERROR: Stale utils.py remains in portable output. See:
+    echo   %LOG_FILE%
+    exit /b 1
+)
+exit /b 0
+
+:verify_no_stale_python_sources
+call :log "Verifying portable output has no stale Python source files."
+set "STALE_SOURCE_FOUND="
+for %%F in (
+    main_gui.py
+    semi_bridge.py
+    utils.py
+    gen_video.py
+    init.py
+    __init__.py
+) do (
+    if exist "%APP_DIR%\%%F" (
+        call :log "ERROR: Stale Python source remains in portable output: %%F"
+        set "STALE_SOURCE_FOUND=1"
+    )
+)
+for %%F in ("%APP_DIR%\*.py") do (
+    if exist "%%~fF" (
+        call :log "ERROR: Stale Python source remains in portable output: %%~nxF"
+        set "STALE_SOURCE_FOUND=1"
+    )
+)
+for %%D in (
+    entity
+    enums
+    __pycache__
+) do (
+    if exist "%APP_DIR%\%%D" (
+        call :log "ERROR: Stale Python source directory remains in portable output: %%D"
+        set "STALE_SOURCE_FOUND=1"
+    )
+)
+if defined STALE_SOURCE_FOUND (
+    echo ERROR: Stale Python source remains in portable output. See:
     echo   %LOG_FILE%
     exit /b 1
 )

@@ -12,7 +12,7 @@ from queue import Full
 from queue import Queue
 
 QT_GUI_ROOT = Path(__file__).resolve().parent
-if str(QT_GUI_ROOT) not in sys.path:
+if not getattr(sys, "frozen", False) and str(QT_GUI_ROOT) not in sys.path:
     sys.path.insert(0, str(QT_GUI_ROOT))
 
 if hasattr(os, "add_dll_directory"):
@@ -69,6 +69,7 @@ from semi_bridge import build_preview_image_with_exif
 from semi_bridge import generate_video_with_logs
 from semi_bridge import get_default_logo_options
 from semi_bridge import get_element_options
+from semi_bridge import get_exif_backend_options
 from semi_bridge import get_font_options
 from semi_bridge import get_layout_options
 from semi_bridge import get_runtime_config_snapshot
@@ -81,6 +82,14 @@ try:
     import semi_embedded_example_asset as embedded_example_asset
 except ImportError:
     embedded_example_asset = None
+
+
+def _runtime_exif_backend_label() -> str:
+    get_backend = getattr(runtime_utils, "get_exif_backend", None)
+    if callable(get_backend):
+        return str(get_backend())
+    return "python"
+
 
 LOCATION_LABELS = {
     "left_top": "左上角",
@@ -593,11 +602,14 @@ class MainWindow(QMainWindow):
         self.shadow_check = QCheckBox("阴影")
         self.equivalent_check = QCheckBox("等效焦距")
         self.padding_check = QCheckBox("按原图比例填充")
+        self.exif_backend_combo = NoWheelComboBox()
 
         row.addWidget(self.white_margin_check)
         row.addWidget(self.shadow_check)
         row.addWidget(self.equivalent_check)
         row.addWidget(self.padding_check)
+        row.addWidget(QLabel("EXIF 读取"))
+        row.addWidget(self.exif_backend_combo)
         row.addStretch(1)
 
         return group
@@ -841,6 +853,7 @@ class MainWindow(QMainWindow):
         self.shadow_check.stateChanged.connect(self._schedule_realtime_preview)
         self.equivalent_check.stateChanged.connect(self._schedule_realtime_preview)
         self.padding_check.stateChanged.connect(self._schedule_realtime_preview)
+        self.exif_backend_combo.currentIndexChanged.connect(self._on_exif_backend_changed)
 
         for location_key, controls in self.element_controls.items():
             combo = controls["combo"]
@@ -867,6 +880,7 @@ class MainWindow(QMainWindow):
         self.shadow_check.setChecked(state["shadow"])
         self.equivalent_check.setChecked(state["equivalent_focal"])
         self.padding_check.setChecked(state["padding_ratio"])
+        self._set_combo_by_data(self.exif_backend_combo, state["exif_backend"])
 
         for location_key, controls in self.element_controls.items():
             element_state = state["elements"][location_key]
@@ -881,6 +895,8 @@ class MainWindow(QMainWindow):
         self._schedule_realtime_preview()
 
         self._append_log("配置已加载，可直接开始处理。")
+        self._append_log(f"EXIF 读取模式：{_runtime_exif_backend_label()}")
+        self._append_log(f"ExifTool 兜底路径：{runtime_utils.EXIFTOOL_PATH}")
 
     def _populate_static_options(self) -> None:
         self.layout_combo.clear()
@@ -896,6 +912,10 @@ class MainWindow(QMainWindow):
         for display_name, path in get_font_options():
             self.font_combo.addItem(display_name, path)
             self.bold_font_combo.addItem(display_name, path)
+
+        self.exif_backend_combo.clear()
+        for display_name, value in get_exif_backend_options():
+            self.exif_backend_combo.addItem(display_name, value)
 
         element_options = get_element_options()
         for controls in self.element_controls.values():
@@ -928,6 +948,7 @@ class MainWindow(QMainWindow):
             "shadow": self.shadow_check.isChecked(),
             "equivalent_focal": self.equivalent_check.isChecked(),
             "padding_ratio": self.padding_check.isChecked(),
+            "exif_backend": self.exif_backend_combo.currentData(),
             "elements": elements,
         }
 
@@ -958,6 +979,7 @@ class MainWindow(QMainWindow):
 
         apply_runtime_config_from_values(settings, save=True)
         self._append_log("配置保存成功。")
+        self._append_log(f"EXIF 读取模式：{_runtime_exif_backend_label()}")
         QMessageBox.information(self, "完成", "配置已保存。")
 
     def _start_processing(self) -> None:
@@ -1211,6 +1233,12 @@ class MainWindow(QMainWindow):
             return
         self.preview_timer.start(PREVIEW_DEBOUNCE_MS)
 
+    def _on_exif_backend_changed(self, *_args) -> None:
+        self.preview_exif_source_key = None
+        self.preview_exif_source_token = None
+        self.preview_exif_data = None
+        self._schedule_realtime_preview()
+
     def _refresh_preview_now(self) -> None:
         if self.realtime_preview_paused:
             return
@@ -1442,7 +1470,7 @@ class MainWindow(QMainWindow):
         preview_data,
         exif_preview,
         raw_exif,
-        _message: str,
+        message: str,
         signature,
     ) -> None:
         try:
@@ -1470,6 +1498,9 @@ class MainWindow(QMainWindow):
             if isinstance(signature, tuple) and len(signature) == 2:
                 self.preview_last_rendered_signature = signature
             self.preview_status_label.setText("状态：实时预览已更新")
+            if isinstance(message, str) and message.strip():
+                for line in message.splitlines():
+                    self._append_log(line)
         except Exception as exc:
             if request_id == self.preview_latest_request_id:
                 self.preview_status_label.setText(f"状态：实时预览失败：{exc}")
@@ -1531,6 +1562,7 @@ class MainWindow(QMainWindow):
 
         <h3>二、功能分区说明</h3>
         <p><b>图片处理页</b>：负责所有图片输出配置与批处理执行。</p>
+        <p><b>EXIF 读取</b>：默认使用 Python 包读取，必要时可切换为 ExifTool。</p>
         <p><b>视频生成页</b>：把输出目录图片拼成视频，可设置切换间隔。</p>
         <p><b>示例预览页</b>：仅展示应用当前设置后的预览图效果。</p>
         <p><b>运行日志页</b>：查看实时进度、报错和任务结果。</p>
@@ -1539,7 +1571,8 @@ class MainWindow(QMainWindow):
         <p>1. 若只想在原目录旁生成新图，可将输出目录留空。</p>
         <p>2. 自定义文字仅在对应位置选择“自定义”时生效。</p>
         <p>3. 实时预览仅用于效果观察，不会写入输出目录。</p>
-        <p>4. 视频功能依赖 ffmpeg，首次使用可能会自动准备。</p>
+        <p>4. 若某些相机镜头信息识别不完整，可把 EXIF 读取切换为 ExifTool。</p>
+        <p>5. 视频功能依赖 ffmpeg，首次使用可能会自动准备。</p>
 
         <h3>四、故障排查</h3>
         <p>1. 若提示输入目录无图片，请确认扩展名是 jpg/jpeg/png。</p>

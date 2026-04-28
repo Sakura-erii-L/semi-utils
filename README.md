@@ -61,7 +61,7 @@ python main_gui.py
 semi-utils-qt-gui
 ```
 
-源码运行时需要能够调用 ExifTool。Windows 下可以将 `exiftool.exe` 放到 `qt_gui/exiftool/exiftool.exe`，或确保 `exiftool.exe` 已加入 `PATH`；macOS/Linux 下可以安装系统版本的 `exiftool`。
+Qt 图形界面默认使用 Python 包读取 EXIF。ExifTool 会作为兜底保留；Windows 下可以将 `exiftool.exe` 放到 `qt_gui/exiftool/exiftool.exe`，或确保 `exiftool.exe` 已加入 `PATH`；macOS/Linux 下可以安装系统版本的 `exiftool`。
 
 ### 使用命令行批处理
 
@@ -84,6 +84,7 @@ python main.py
 - 修改任意配置后，预览会自动刷新；预览不会写入输出目录。
 - 如果只想在源图旁生成新图，可以将输出目录留空。
 - 自定义文字只在对应位置选择“自定义”时生效。
+- “全局选项”中的“EXIF 读取”默认使用 Python 包；若部分机型镜头信息识别不完整，可切换为 ExifTool。
 
 ## 布局类型
 
@@ -139,6 +140,8 @@ global:
     enable: false
   focal_length:
     use_equivalent_focal_length: false
+  exif:
+    backend: python
 
 layout:
   type: watermark_right_logo

@@ -9,6 +9,8 @@ base:
   output_dir: output
   quality: 100
 global:
+  exif:
+    backend: python
   focal_length:
     use_equivalent_focal_length: false
   padding_with_original_ratio:

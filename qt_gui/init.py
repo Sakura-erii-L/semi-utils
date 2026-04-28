@@ -50,8 +50,18 @@ debug_handler.setLevel(logging.DEBUG)
 debug_handler.setFormatter(formatter)
 
 # 设置日志输出的格式和级别，并将日志输出到指定文件中
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                    handlers=[debug_handler, info_handler, error_handler])
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[debug_handler, info_handler, error_handler],
+    force=True,
+)
+
+from utils import EXIFTOOL_PATH
+
+logger = logging.getLogger(__name__)
+logger.info('Config path: %s', CONFIG_PATH)
+logger.info('ExifTool executable available at: %s', EXIFTOOL_PATH)
 
 SEPARATE_LINE = '+' + '-' * 15 + '+' + '-' * 15 + '+'
 
@@ -75,6 +85,7 @@ class LayoutItem(object):
 
 # 读取配置
 config = Config(str(CONFIG_PATH))
+logger.info('Configured EXIF backend: %s', config.get_data().get('global', {}).get('exif', {}).get('backend', 'python'))
 
 EMPTY_PROCESSOR = EmptyProcessor(config)
 WATERMARK_PROCESSOR = WatermarkProcessor(config)

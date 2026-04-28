@@ -28,7 +28,7 @@ semi-utils-qt-gui
 
 - `entity/`：从原项目复制来的核心对象和处理器。
   - `config.py`：配置加载、Logo 加载、路径保存。
-  - `image_container.py`：用 Pillow 打开图片，用 exiftool 读取 EXIF，并按 Orientation 修正方向。
+  - `image_container.py`：用 Pillow 打开图片，通过 Python EXIF 读取器或 ExifTool 读取 EXIF，并按 Orientation 修正方向。
   - `image_processor.py`：水印、Logo、白边、阴影等布局处理器。
 - `enums/`：常量定义。
 - `utils.py`：EXIF、图片拼接、文字转图、尺寸处理等工具函数。
@@ -90,6 +90,20 @@ output_dir: output
 如果配置连续变化，预览不会排队渲染所有历史状态，只保留最新一次待刷新请求。
 
 预览不会写入输出目录。
+
+## EXIF 读取
+
+默认使用 Python 包 `exifread` 读取 EXIF；如果 Python 读取失败，会自动兜底调用 ExifTool。
+
+也可以在“全局选项 -> EXIF 读取”中手动切换为 ExifTool。部分厂商私有字段、特殊镜头识别或异常 EXIF 文件仍可能需要 ExifTool 才能获得更完整的信息。
+
+相关配置：
+
+```yaml
+global:
+  exif:
+    backend: python  # python / exiftool
+```
 
 ## Logo 行为
 

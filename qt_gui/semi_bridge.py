@@ -20,7 +20,44 @@ from gen_video import generate_video
 from init import ITEM_LIST
 from init import LAYOUT_ITEMS
 from init import config
-from utils import get_exif
+import utils as runtime_utils
+
+EXIF_BACKEND_PYTHON = getattr(runtime_utils, "EXIF_BACKEND_PYTHON", "python")
+EXIF_BACKEND_EXIFTOOL = getattr(runtime_utils, "EXIF_BACKEND_EXIFTOOL", "exiftool")
+
+
+def get_exif(path: str | Path, on_message: Callable[[str], None] | None = None) -> dict:
+    reader = runtime_utils.get_exif
+    if on_message is None:
+        return reader(path)
+    try:
+        return reader(path, on_message=on_message)
+    except TypeError as exc:
+        if "on_message" not in str(exc):
+            raise
+        return reader(path)
+
+
+def normalize_exif_backend(backend: str | None) -> str:
+    normalizer = getattr(runtime_utils, "normalize_exif_backend", None)
+    if callable(normalizer):
+        return normalizer(backend)
+    if str(backend or "").strip().lower() == EXIF_BACKEND_EXIFTOOL:
+        return EXIF_BACKEND_EXIFTOOL
+    return EXIF_BACKEND_PYTHON
+
+
+def set_exif_backend(backend: str | None) -> None:
+    setter = getattr(runtime_utils, "set_exif_backend", None)
+    if callable(setter):
+        setter(normalize_exif_backend(backend))
+
+
+def get_exif_backend() -> str:
+    getter = getattr(runtime_utils, "get_exif_backend", None)
+    if callable(getter):
+        return normalize_exif_backend(getter())
+    return EXIF_BACKEND_PYTHON
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +68,16 @@ _preview_exif_cache: dict[str, tuple[tuple[int, int], dict]] = {}
 
 # 使用 init.py 中已注册的布局信息，避免重复维护“布局ID -> 处理器类”的映射。
 _LAYOUT_CLASS_MAP = {item.value: item.processor.__class__ for item in LAYOUT_ITEMS}
+
+
+def _get_config_exif_backend(data: dict) -> str:
+    exif_data = data.get("global", {}).get("exif", {})
+    if not isinstance(exif_data, dict):
+        return EXIF_BACKEND_PYTHON
+    return normalize_exif_backend(exif_data.get("backend", EXIF_BACKEND_PYTHON))
+
+
+set_exif_backend(_get_config_exif_backend(config.get_data()))
 
 
 @dataclass
@@ -96,6 +143,13 @@ def get_font_options() -> list[tuple[str, str]]:
     return options
 
 
+def get_exif_backend_options() -> list[tuple[str, str]]:
+    return [
+        ("Python 包（默认）", EXIF_BACKEND_PYTHON),
+        ("ExifTool", EXIF_BACKEND_EXIFTOOL),
+    ]
+
+
 def get_source_file_list(input_dir: str) -> list[Path]:
     return _get_source_file_list(input_dir)
 
@@ -136,6 +190,7 @@ def get_runtime_config_snapshot() -> dict:
         "shadow": bool(data["global"]["shadow"].get("enable", False)),
         "equivalent_focal": bool(data["global"]["focal_length"].get("use_equivalent_focal_length", False)),
         "padding_ratio": bool(data["global"]["padding_with_original_ratio"].get("enable", False)),
+        "exif_backend": _get_config_exif_backend(data),
         "elements": {
             location: {
                 "name": element_data[location].get("name", ""),
@@ -190,6 +245,10 @@ def apply_runtime_config_from_values(values: dict, save: bool = True, ensure_out
     global_data["padding_with_original_ratio"]["enable"] = bool(
         values.get("padding_ratio", global_data["padding_with_original_ratio"].get("enable", False))
     )
+    exif_data = global_data.setdefault("exif", {})
+    exif_backend = normalize_exif_backend(values.get("exif_backend", exif_data.get("backend", EXIF_BACKEND_PYTHON)))
+    exif_data["backend"] = exif_backend
+    set_exif_backend(exif_backend)
 
     element_values = values.get("elements", {})
     for location in LOCATION_KEYS:
@@ -260,11 +319,16 @@ def _get_source_file_list(input_dir: str) -> list[Path]:
     return [file_path for file_path in source_dir.iterdir() if file_path.is_file() and file_path.suffix in SUPPORTED_SUFFIXES]
 
 
-def _process_one_image(source_path: Path, processor_chain: ProcessorChain) -> tuple[bool, str]:
+def _process_one_image(
+    source_path: Path,
+    processor_chain: ProcessorChain,
+    on_message: Callable[[str], None] | None = None,
+) -> tuple[bool, str]:
     container = None
     runtime_backup: dict[str, tuple[str, str]] = {}
     try:
-        container = ImageContainer(source_path)
+        source_exif = get_exif(source_path, on_message=on_message)
+        container = ImageContainer(source_path, exif=source_exif)
         container.is_use_equivalent_focal_length(config.use_equivalent_focal_length())
         runtime_backup = _apply_photographer_runtime_mapping(container)
         processor_chain.process(container)
@@ -309,7 +373,7 @@ def process_images(
                 on_message("收到停止请求，任务已提前结束。")
             break
 
-        ok, message = _process_one_image(source_path, processor_chain)
+        ok, message = _process_one_image(source_path, processor_chain, on_message=on_message)
         if ok:
             summary.success += 1
         else:
@@ -333,15 +397,15 @@ def _resize_for_preview(image: PILImage.Image, max_side: int = 960) -> PILImage.
     return preview
 
 
-def _get_cached_preview_exif(sample_file: Path) -> dict:
+def _get_cached_preview_exif(sample_file: Path, on_message: Callable[[str], None] | None = None) -> dict:
     stat = sample_file.stat()
-    cache_key = str(sample_file.resolve())
+    cache_key = f"{get_exif_backend()}:{sample_file.resolve()}"
     cache_token = (stat.st_mtime_ns, stat.st_size)
     cached = _preview_exif_cache.get(cache_key)
     if cached is not None and cached[0] == cache_token:
         return cached[1].copy()
 
-    exif = get_exif(sample_file)
+    exif = get_exif(sample_file, on_message=on_message)
     _preview_exif_cache[cache_key] = (cache_token, exif.copy())
     while len(_preview_exif_cache) > _PREVIEW_EXIF_CACHE_MAX:
         _preview_exif_cache.pop(next(iter(_preview_exif_cache)))
@@ -433,7 +497,8 @@ def build_preview_image_with_exif(
     container = None
     after = None
     runtime_backup: dict[str, tuple[str, str]] = {}
-    source_exif = exif.copy() if exif is not None else _get_cached_preview_exif(sample_file)
+    exif_messages: list[str] = []
+    source_exif = exif.copy() if exif is not None else _get_cached_preview_exif(sample_file, on_message=exif_messages.append)
     try:
         container = _build_preview_container(sample_file, max_side, exif=source_exif)
         container.is_use_equivalent_focal_length(config.use_equivalent_focal_length())
@@ -446,7 +511,7 @@ def build_preview_image_with_exif(
 
         after = _resize_for_preview(container.get_watermark_img(), max_side=max_side)
 
-        message = f"预览完成：{sample_file.name}"
+        message = "\n".join(exif_messages)
         return after, exif_preview, source_exif.copy(), message
     except Exception as exc:
         if after is not None:
