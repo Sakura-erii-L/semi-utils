@@ -1,318 +1,213 @@
-# semi-utils
+# Semi-Utils
 
-> [![hugo-papermod](https://img.shields.io/badge/Semi--Utils-@LeslieVan-red)](https://github.com/leslievan/semi-utils)
-> [![download](https://img.shields.io/github/downloads/leslievan/semi-utils/total.svg)](https://github.com/leslievan/semit-utils/releases)
-> [![release](https://img.shields.io/github/v/release/leslievan/semi-utils)](https://github.com/leslievan/semi-utils/releases)
-> [![license](https://img.shields.io/github/license/leslievan/semi-utils)](https://github.com/leslievan/semi-utils/blob/master/LICENSE)
-> ![language](https://img.shields.io/github/languages/top/leslievan/semi-utils?color=orange)
->
-> **这是一个用于给照片批量添加水印、处理照片像素比、图像色彩和质量的工具。**
+> 批量为照片添加水印、白边、Logo 和 EXIF 信息的桌面工具，支持实时预览、批处理输出和图片转视频。
 
-如果您觉得程序对您有所帮助的话，可以点击 [Sponsor](https://cdn.lsvm.xyz/wechat.jpg) 按钮请作者喝杯咖啡，谢谢！
+[![release](https://img.shields.io/github/v/release/Sakura-erii-L/semi-utils)](https://github.com/Sakura-erii-L/semi-utils/releases)
+[![downloads](https://img.shields.io/github/downloads/Sakura-erii-L/semi-utils/total.svg)](https://github.com/Sakura-erii-L/semi-utils/releases)
+[![license](https://img.shields.io/github/license/Sakura-erii-L/semi-utils)](LICENSE)
+[![python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
 
+## 功能特性
 
-## 开发文档
+- 图形界面：基于 PySide6，支持选择图片、实时预览、批量处理和日志查看。
+- 水印布局：支持常规水印、黑色主题、自定义水印、正方形填充、简洁样式、背景模糊和纯白边框。
+- EXIF 信息：自动读取相机、镜头、焦距、光圈、快门、ISO、拍摄时间、文件名和地理信息等字段。
+- Logo 匹配：可按相机厂商自动匹配 Logo，也可以指定默认 Logo。
+- 批量输出：支持 `jpg`、`jpeg`、`png`，可选择输入目录、手动选择图片和输出目录。
+- 视频生成：可将输出目录中的图片合成为视频，支持设置图片切换间隔。
+- 便携发布：Windows 版本可直接解压运行，不需要用户手动安装 Python。
 
-**[Wiki](../../wiki)**
+## 效果预览
 
-## 效果展示
+| 常规水印 | Logo 居右 | 黑色主题 |
+| --- | --- | --- |
+| ![](images/1.jpeg) | ![](images/2.jpeg) | ![](images/3.jpeg) |
+| 自定义水印 | 正方形填充 | 简洁样式 |
+| ![](images/5.jpeg) | ![](images/6.jpeg) | ![](images/7.jpeg) |
+| 背景模糊 | 背景模糊 + 白框 |  |
+| ![](images/8.jpeg) | ![](images/9.jpeg) |  |
 
-||||
-|-|-|-|
-|![](images/1.jpeg)|![](images/2.jpeg)|![](images/3.jpeg)|
-|![](images/4.jpeg)|![](images/5.jpeg)|![](images/6.jpeg)|
-|![](images/7.jpeg)|![](images/8.jpeg)|![](images/9.jpeg)|
+## 快速开始
 
+### Windows 便携版
 
-## 使用方法
+1. 打开 [Releases](https://github.com/Sakura-erii-L/semi-utils/releases/latest)，下载 `SemiUtilsQt-windows.zip`。
+2. 解压压缩包。
+3. 进入解压后的 `SemiUtilsQt` 目录，双击 `SemiUtilsQt.exe`。
+4. 在界面中选择输入图片或输入目录，设置输出目录、布局、Logo 和文字内容。
+5. 查看右侧实时预览，确认效果后点击“开始批处理”。
 
-> **简要步骤**
->
-> ![](images/steps.png)
+如果双击后没有明显反应，可以运行同目录下的 `debug_run_with_log.bat`，再查看生成的 `runtime.log`。
 
-### Windows
+### 从源码运行 Qt 图形界面
 
-- 点击[Release](https://github.com/leslievan/semi-utils/releases) 可直接下载压缩包，其中包含可执行文件 `main.exe`、配置文件 `config.yaml`、输入文件夹 `input` 和输出文件夹 `output`。
-- 解压压缩包，比如解压到 `D:\semi-utils`
-- 将需要添加水印的图片复制到 `D:\semi-utils\input` 文件夹中
-- 双击 `D:\semi-utils\main.exe` 运行程序
-- 按照提示输入 `y或回车` 开始执行
-- 处理好的图片存放在 `D:\semi-utils\output` 中
+需要 Python 3.10 或更新版本。
 
----
+```powershell
+git clone https://github.com/Sakura-erii-L/semi-utils.git
+cd semi-utils\qt_gui
 
-### macOS/Linux
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -e .
 
-#### 使用 git
+python main_gui.py
+```
 
-- **安装需要的依赖（正式运行前执行一次即可）**
+也可以安装后直接运行命令：
 
-  打开命令行/终端，输入：
+```powershell
+semi-utils-qt-gui
+```
 
-  ```shell
-  # 使用 git 将代码下载到本地，比如 ~/semi-utils，如果要下载到其他路径替换掉下面命令中的路径即可
-  git clone --depth 1 https://github.com/leslievan/semi-utils.git ~/semi-utils
-  cd ~/semi-utils
-  chmod +x install.sh
-  ./install.sh
-  ```
+源码运行时需要能够调用 ExifTool。Windows 下可以将 `exiftool.exe` 放到 `qt_gui/exiftool/exiftool.exe`，或确保 `exiftool.exe` 已加入 `PATH`；macOS/Linux 下可以安装系统版本的 `exiftool`。
 
-  > 你可以按下 command+空格键，打开 Spotlight 搜索栏，在搜索栏中输入 `终端` 即可。
-  >
-  > 如果命令运行出错可以参考 [常见问题](#常见问题)。
+### 使用命令行批处理
 
-- 将需要添加水印的图片复制到 `~/semi-utils/input` 文件夹中
+命令行版本保留在项目根目录，适合不需要图形界面的批处理场景。
 
-- 打开命令行/终端，输入
+```powershell
+git clone https://github.com/Sakura-erii-L/semi-utils.git
+cd semi-utils
+pip install -r requirements.txt
+python main.py
+```
 
-   ```shell
-   cd ~/semi-utils
-   python3 ~/semi-utils/main.py
-   ```
+默认会读取 `input/` 中的图片，并将结果输出到 `output/`。运行时可以在菜单中调整布局、Logo、输出路径和更多选项。命令行版本同样依赖 ExifTool，Windows 下可放到 `exiftool/exiftool.exe`，macOS/Linux 下可放到 `exiftool/exiftool` 或安装到系统 `PATH`。
 
-- 按照提示输入 `y或回车` 开始执行
+## 图形界面使用说明
 
-- 处理好的图片存放在 `~/semi-utils/output` 中
+- “图片处理”页用于设置输入、输出、布局、Logo、文字字段、字体、质量和批处理。
+- “视频生成”页会读取当前输出目录中的 `jpg/jpeg/png` 图片并生成视频。
+- “示例预览”页显示应用当前设置后的效果图。
+- 修改任意配置后，预览会自动刷新；预览不会写入输出目录。
+- 如果只想在源图旁生成新图，可以将输出目录留空。
+- 自定义文字只在对应位置选择“自定义”时生效。
 
-#### 手动下载
+## 布局类型
 
-<details>
-<summary>点击展开</summary>
+| ID | 界面名称 | 说明 |
+| --- | --- | --- |
+| `watermark_left_logo` | normal | 常规水印，Logo 在左侧 |
+| `watermark_right_logo` | normal(Logo 居右) | 常规水印，Logo 在右侧 |
+| `dark_watermark_left_logo` | normal(黑红配色) | 深色背景水印，Logo 在左侧 |
+| `dark_watermark_right_logo` | normal(黑红配色，Logo 居右) | 深色背景水印，Logo 在右侧 |
+| `custom_watermark` | normal(自定义配置) | 使用配置中的颜色、粗体、Logo 开关和位置 |
+| `square` | 1:1填充 | 将图片填充为正方形 |
+| `simple` | 简洁 | 输出简洁的 Shot on 风格信息 |
+| `background_blur` | 背景模糊 | 使用原图模糊背景承托照片 |
+| `background_blur_with_white_border` | 背景模糊+白框 | 模糊背景叠加白色边框 |
+| `pure_white_margin` | 白色边框 | 只添加纯白边框 |
 
-- 下载[源码](http://file.lsvm.xyz/semi-utils-latest-source.zip)后解压，比如解压到 `~/semi-utils`，路径需要自行替换。
+## 可用文字字段
 
-   > 你可以右键单击解压后的文件夹，按住 Opt 键-选择将xxx拷贝为路径名称 ，用剪贴板中的实际路径替换下面命令中的 `~/semi-utils`.
+| 字段 | 含义 |
+| --- | --- |
+| `Model` | 相机型号 |
+| `Make` | 相机厂商 |
+| `LensModel` | 镜头型号 |
+| `Param` | 拍摄参数，例如焦距、光圈、快门、ISO |
+| `Datetime` | 拍摄日期时间 |
+| `Date` | 拍摄日期 |
+| `Custom` | 自定义文字 |
+| `None` | 不显示 |
+| `LensMake_LensModel` | 镜头厂商 + 镜头型号 |
+| `CameraModel_LensModel` | 相机型号 + 镜头型号 |
+| `TotalPixel` | 总像素 |
+| `CameraMake_CameraModel` | 相机厂商 + 相机型号 |
+| `Filename` | 文件名 |
+| `Date_Filename` | 日期 + 文件名 |
+| `Datetime_Filename` | 日期时间 + 文件名 |
+| `GeoInfo` | 地理信息 |
 
-- **安装需要的依赖（正式运行前执行一次即可）**
+## 配置文件
 
-   打开命令行/终端，输入：
-
-   ```shell
-   cd ~/semi-utils
-   chmod +x install.sh
-   ./install.sh
-   ```
-
-   > 你可以按下 command+空格键，打开 Spotlight 搜索栏，在搜索栏中输入 `终端` 即可。
-   >
-   > 如果命令运行出错可以参考 [常见问题](#常见问题)。
-
-- 将需要添加水印的图片复制到 `~/semi-utils/input` 文件夹中
-
-- 打开命令行/终端，输入
-
-   ```shell
-   cd ~/semi-utils
-   python3 ~/semi-utils/main.py
-   ```
-
-- 按照提示输入 `y或回车` 开始执行
-
-- 处理好的图片存放在 `~/semi-utils/output` 中
-
-
-</details>
-
-## 配置项
-
-通过 `config.yaml` 配置。
-
-<details>
-<summary>点击展开</summary>
+主要配置在 `config.yaml` 中，Qt 图形界面使用 `qt_gui/config.yaml`。常用配置包括：
 
 ```yaml
 base:
-  alternative_bold_font: ./fonts/Roboto-Medium.ttf
-  alternative_font: ./fonts/Roboto-Regular.ttf
-  # 粗体
-  bold_font: ./fonts/AlibabaPuHuiTi-2-85-Bold.otf
-  # 粗体字体大小
-  bold_font_size: 1
-  # 常规字体
-  font: ./fonts/AlibabaPuHuiTi-2-45-Light.otf
-  # 常规字体大小
-  font_size: 1
-  # 输入文件夹
   input_dir: ./input
-  # 输出文件夹
   output_dir: ./output
-  # 输出图片质量，如果你觉得输出图片的体积过大，比如一张20M的图片，处理后变成了40M，那么你可以通过适当降低输出质量来减小图片体积
   quality: 100
-global: # 全局设置，你可以在命令行中通过【更多设置】来修改这些设置
-  focal_length:
-    # 是否使用等效焦距
-    use_equivalent_focal_length: false
-  padding_with_original_ratio:
-    # 是否使用原始图片的宽高比来填充白边
-    enable: false
-  shadow:
-    # 是否使用阴影
-    enable: false
-  white_margin:
-    # 是否使用白边
-    enable: true
-    # 白边宽度
-    width: 3
-layout:
-  # 背景颜色，仅在布局为 normal（自定义）时有效
-  background_color: '#ffffff'
-  elements:
-    # 左下角元素
-    left_bottom:
-      # 左下角文字颜色，仅在布局为 normal（自定义）时有效
-      color: '#757575'
-      # 是否使用粗体，仅在布局为 normal（自定义）时有效
-      is_bold: false
-      # 左下角文字内容，可选项参考下表
-      name: Model
-    # 下面三个元素的设置和上面是类似的
-    left_top:
-      color: '#212121'
-      is_bold: true
-      name: LensModel
-    right_bottom:
-      color: '#757575'
-      is_bold: false
-      name: Datetime
-      value: Photo by NONE
-    right_top:
-      color: '#212121'
-      is_bold: true
-      name: Param
-  # 是否使用 Logo，仅在布局为 normal（自定义）时有效，可选项为 true、false
-  logo_enable: false
-  # Logo 位置，仅在布局为 normal（自定义）时有效，可选项为 left、right
-  logo_position: left
-  # 布局类型，可选项参考下表，你可以在命令行中通过【布局】来修改它
-  type: watermark_right_logo
-logo:
-  makes:
-    canon: # 标识，用户自定义，不要重复
-      id: Canon # 厂商名称，从 exif 信息中获取，和 exif 信息中的 Make 字段一致即可
-      path: ./logos/canon.png # Logo 路径
-    # 下同
-    fujifilm:
-      id: FUJIFILM
-      path: ./logos/fujifilm.png
-    hasselblad:
-      id: HASSELBLAD
-      path: ./logos/hasselblad.png
-    huawei:
-      id: HUAWEI
-      path: ./logos/xmage.jpg
-    leica:
-      id: leica
-      path: ./logos/leica_logo.png
-    nikon:
-      id: NIKON
-      path: ./logos/nikon.png
-    olympus:
-      id: Olympus
-      path: ./logos/olympus_blue_gold.png
-    panasonic:
-      id: Panasonic
-      path: ./logos/panasonic.png
-    pentax:
-      id: PENTAX
-      path: ./logos/pentax.png
-    ricoh:
-      id: RICOH
-      path: ./logos/ricoh.png
-    sony:
-      id: SONY
-      path: ./logos/sony.png
 
+global:
+  white_margin:
+    enable: true
+    width: 3
+  shadow:
+    enable: false
+  focal_length:
+    use_equivalent_focal_length: false
+
+layout:
+  type: watermark_right_logo
+  logo_enable: false
+  logo_position: left
 ```
 
-### Layout.Element.Name 可选项
+Logo 配置位于 `logo.makes`。新增 Logo 时，把图片放入 `logos/`，再在 `config.yaml` 中添加厂商 ID 和文件路径。便携版中建议保持相对路径，避免换电脑后资源失效。
 
-| 可选项                   | 描述                             |
-|-------------------------|----------------------------------|
-| Model                   | 相机型号(eg. Nikon Z7)            |
-| Make                    | 相机厂商(eg. Nikon)               |
-| LensModel               | 镜头型号(eg. Nikkor 24-70 f/2.8)  |
-| Param                   | 拍摄参数(eg. 50mm f/1.8 1/1000s ISO 100) |
-| Datetime                | 拍摄时间(eg. 2023-01-01 12:00)   |
-| Date                    | 拍摄日期(eg. 2023-01-01)         |
-| Custom                  | 自定义                           |
-| None                    | 无                               |
-| LensMake_LensModel      | 镜头厂商 + 镜头型号(eg. Nikon Nikkor 24-70 f/2.8) |
-| CameraModel_LensModel   | 相机型号 + 镜头型号(eg. Nikon Z7 Nikkor 24-70 f/2.8) |
-| TotalPixel              | 总像素(MP)                       |
-| CameraMake_CameraModel | 相机厂商 + 相机型号(eg. DJI FC123) |
+## 项目结构
 
-### Layout.Type 可选项
+```text
+.
+├── main.py                 # 命令行入口
+├── config.yaml             # 命令行版本默认配置
+├── entity/                 # 图片容器、配置和处理器
+├── enums/                  # 常量定义
+├── fonts/                  # 字体资源
+├── images/                 # README 示例图
+├── logos/                  # 相机和品牌 Logo
+├── input/                  # 默认输入目录
+├── output/                 # 默认输出目录
+└── qt_gui/
+    ├── main_gui.py         # Qt 图形界面入口
+    ├── semi_bridge.py      # GUI 与核心处理逻辑桥接
+    ├── config.yaml         # Qt 图形界面配置
+    ├── build_release.bat   # Windows 便携版打包脚本
+    └── portable/           # 打包输出目录
+```
 
-| 可选项                      | 描述                                   | 效果                              |
-|---------------------------|----------------------------------------|-----------------------------------|
-|watermark_left_logo|normal|![1](images/1.jpeg)|
-|watermark_right_logo|normal(Logo 居右)|![2](images/2.jpeg)|
-|dark_watermark_left_logo|normal(黑红配色)|![3](images/3.jpeg)|
-|dark_watermark_right_logo|normal(黑红配色，Logo 居右)|![4](images/4.jpeg)|
-|custom_watermark|normal(自定义配置)|![5](images/5.jpeg)|
-|square|1:1填充|![6](images/6.jpeg)|
-|simple|简洁|![7](images/7.jpeg)|
-|background_blur|背景模糊|![8](images/8.jpeg)|
-|background_blur_with_white_border|背景模糊+白框|![9](images/9.jpeg)|
+## 打包 Windows 便携版
 
-</details>
+在 Windows 下进入 `qt_gui` 目录运行：
+
+```powershell
+cd qt_gui
+.\build_release.bat
+```
+
+脚本会生成：
+
+```text
+portable/SemiUtilsQt/SemiUtilsQt.exe
+portable/SemiUtilsQt-windows.zip
+logs/build_release.log
+```
+
+如果本机存在 `semi-utils` conda 环境，脚本会优先使用该环境；否则使用当前 `PATH` 中的 Python。脚本要求 Python 3.10 或更新版本，并会安装或更新 `pip`、`setuptools`、`wheel`、`pyinstaller` 等打包依赖。
 
 ## 常见问题
 
-### 运行 `pip install` 时提示 `command not found`
+### 预览或批处理提示找不到图片
 
-**可能是因为没有安装 Python3**，可以通过以下几种方式安装 Python3。
+确认输入目录中存在 `jpg`、`jpeg` 或 `png` 文件。当前只扫描输入目录第一层，不递归扫描子目录。
 
-1. 使用 Homebrew 安装。
+### Logo 没有按预期显示
 
-   Homebrew 是 Mac 上的软件包管理器，可以轻松地安装许多应用程序和服务。
+检查 `config.yaml` 中的 `logo.makes` 是否包含对应厂商的 `id`，并确认 `path` 指向的图片存在。无法匹配厂商时会使用 `logo.default.path`。
 
-   - 如果你已经安装了 `brew`，打开终端并输入以下命令来安装 Python3：
+### 视频无法生成
 
-     ```shell
-     brew install python3
-     ```
+确认输出目录中已经有处理后的图片。视频功能依赖 ffmpeg；便携版可将 `ffmpeg.exe` 放入 `bin/` 目录。
 
-     如果这条命令提示 `command not found`，代表你没有安装 `brew`，跳转下一步。
+### 程序运行失败或没有反应
 
-    - 如果你没有安装 `brew`，打开终端并输入以下命令来安装 Homebrew：
-
-      ```shell
-      /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-      ```
-
-      然后输入以下命令来安装 Python3：
-
-      ```shell
-      brew install python3
-      ```
-
-2. 使用 dmg 包安装
-
-   你可以从 [Python 官网](https://www.python.org/downloads/macos/) 下载 Python3 的安装包，选择 Stable Release 下的任一版本即可，推荐 `3.10.11`，然后打开下载好的安装包按照提示安装即可。
-
-**验证安装**
-
-安装完成后，可以使用以下命令来验证 Python3 是否正确安装：
-
-```shell
-python3 --version
-```
-
-此命令将返回已安装的 Python3 版本号。
-
-## 特别感谢
-
-![JetBrains](https://resources.jetbrains.com/storage/products/company/brand/logos/jb_beam.png)
-
-感谢 [JetBrains](https://jb.gg/OpenSourceSupport) 为本项目提供的开源许可。
+优先查看界面右侧日志；便携版可运行 `debug_run_with_log.bat` 并查看同目录下的 `runtime.log`。源码运行时可查看 `logs/` 目录下的日志文件。
 
 ## 许可证
 
-Semi-Utils 的发布基于 [Apache License 2.0](LICENSE).
+Semi-Utils 基于 [Apache License 2.0](LICENSE) 发布。
 
-Semi-Utils 引用了 [exiftool](https://exiftool.org/)，其发布基于 [GPL v1 + Artistic License 2.0](https://exiftool.org/#license)。
-
-## 关于
-
-[![Stargazers over time](https://starchart.cc/leslievan/semi-utils.svg)](https://starchart.cc/leslievan/semi-utils)
+项目使用的 [ExifTool](https://exiftool.org/) 遵循其自身许可协议。
