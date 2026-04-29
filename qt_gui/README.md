@@ -192,8 +192,8 @@ portable/SemiUtilsQt-windows.zip
 构建日志：
 
 ```text
-logs/build_release_YYYYMMDD_HHMMSS_PID.log
-logs/build_release.log  # 最新日志副本
+logs/build/build_release_YYYYMMDD_HHMMSS_PID.log
+logs/build/build_release.log  # 最新日志副本
 ```
 
 构建中间产物：
@@ -204,7 +204,7 @@ temp/
 
 脚本结束时会删除 `temp/`、旧版 `build_release/`、`*.egg-info` 和 `__pycache__`。
 
-便携版中会生成 `run_with_log.bat`。如果双击 `SemiUtilsQt.exe` 没有明显反应，运行它并查看同目录的 `runtime.log`。
+便携版默认不再生成调试启动 bat，避免误双击后出现控制台窗口。若确实需要控制台方式排查 stdout/stderr，可在构建前设置 `INCLUDE_DEBUG_RUNNER=1`，脚本会额外生成 `debug_run_with_log.bat` 和同目录 `runtime.log`。
 
 ## 常见维护点
 

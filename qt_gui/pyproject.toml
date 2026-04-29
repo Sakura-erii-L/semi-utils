@@ -14,7 +14,13 @@ dependencies = [
   "python-dateutil>=2.8.2",
   "requests>=2.31.0",
   "PySide6>=6.8.1",
-  "exifread>=3.0.0"
+  "exifread>=3.0.0",
+  "tqdm>=4.66.0"
+]
+
+[project.optional-dependencies]
+build = [
+  "pyinstaller>=6.0"
 ]
 
 [project.scripts]
@@ -23,6 +29,11 @@ semi-utils-qt-gui = "main_gui:main"
 [tool.setuptools]
 py-modules = ["main_gui", "semi_bridge", "gen_video", "init", "utils"]
 include-package-data = true
+
+# Runtime assets such as config.yaml, fonts/, logos/, exiftool/, and logo.ico
+# are intentionally kept beside the source tree or PyInstaller portable output.
+# The editable install entry point is supported; wheel packaging these assets
+# would require converting the project to a package-based resource layout.
 
 [tool.setuptools.packages.find]
 where = ["."]

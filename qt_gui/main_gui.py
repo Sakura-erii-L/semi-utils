@@ -2,16 +2,65 @@ from __future__ import annotations
 
 import sys
 import tempfile
+import threading
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import json
 from pathlib import Path
 import os
+import logging
 from queue import Empty
 from queue import Full
 from queue import Queue
 
-QT_GUI_ROOT = Path(__file__).resolve().parent
+QT_GUI_ROOT = getattr(sys, '_MEIPASS', Path(__file__).resolve().parent)
+if isinstance(QT_GUI_ROOT, str):
+    QT_GUI_ROOT = Path(QT_GUI_ROOT)
+RUNTIME_APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else QT_GUI_ROOT
+RUNTIME_LOG_DIR = RUNTIME_APP_DIR.joinpath("logs")
+STARTUP_LOG_PATH = RUNTIME_LOG_DIR.joinpath("startup.log")
+
+
+def _append_startup_log(message: str) -> None:
+    try:
+        RUNTIME_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        with STARTUP_LOG_PATH.open("a", encoding="utf-8") as log_file:
+            log_file.write(f"[{timestamp}] {message}\n")
+    except Exception:
+        pass
+
+
+def _append_startup_exception(context: str, exc_type, exc_value, exc_tb) -> None:
+    details = "".join(traceback.format_exception(exc_type, exc_value, exc_tb)).rstrip()
+    _append_startup_log(f"{context}\n{details}")
+
+
+def _handle_uncaught_exception(exc_type, exc_value, exc_tb) -> None:
+    _append_startup_exception("Uncaught exception", exc_type, exc_value, exc_tb)
+    sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+
+sys.excepthook = _handle_uncaught_exception
+if hasattr(threading, "excepthook"):
+    def _handle_thread_exception(args) -> None:
+        _append_startup_exception(
+            f"Uncaught thread exception in {getattr(args.thread, 'name', '<unknown>')}",
+            args.exc_type,
+            args.exc_value,
+            args.exc_traceback,
+        )
+
+    threading.excepthook = _handle_thread_exception
+
+_append_startup_log(
+    "Process start: "
+    f"frozen={getattr(sys, 'frozen', False)}, "
+    f"executable={sys.executable}, "
+    f"runtime_root={QT_GUI_ROOT}, "
+    f"app_dir={RUNTIME_APP_DIR}"
+)
 if not getattr(sys, "frozen", False) and str(QT_GUI_ROOT) not in sys.path:
     sys.path.insert(0, str(QT_GUI_ROOT))
 
@@ -30,6 +79,13 @@ if 'SEMI_UTILS_CONFIG' not in os.environ:
     bundled_config = QT_GUI_ROOT.joinpath('config.yaml')
     if bundled_config.exists():
         os.environ['SEMI_UTILS_CONFIG'] = str(bundled_config)
+
+qt_plugin_dir = QT_GUI_ROOT.joinpath("PySide6", "plugins")
+qt_platform_dir = qt_plugin_dir.joinpath("platforms")
+if qt_plugin_dir.exists():
+    os.environ.setdefault("QT_PLUGIN_PATH", str(qt_plugin_dir))
+if qt_platform_dir.exists():
+    os.environ.setdefault("QT_QPA_PLATFORM_PLUGIN_PATH", str(qt_platform_dir))
 
 from PySide6.QtCore import QEvent
 from PySide6.QtCore import QObject
@@ -78,18 +134,17 @@ from semi_bridge import normalize_source_files
 from semi_bridge import process_images
 import utils as runtime_utils
 
+install_subprocess_audit = getattr(runtime_utils, "install_subprocess_audit", None)
+if callable(install_subprocess_audit):
+    install_subprocess_audit()
+
 try:
     import semi_embedded_example_asset as embedded_example_asset
 except ImportError:
     embedded_example_asset = None
 
 
-def _runtime_exif_backend_label() -> str:
-    get_backend = getattr(runtime_utils, "get_exif_backend", None)
-    if callable(get_backend):
-        return str(get_backend())
-    return "python"
-
+logger = logging.getLogger(__name__)
 
 LOCATION_LABELS = {
     "left_top": "左上角",
@@ -261,6 +316,23 @@ class VideoWorker(QObject):
             self.crashed.emit(str(exc))
 
 
+class GuiLogHandler(logging.Handler, QObject):
+    """将日志系统的输出转发给 GUI"""
+    log_emitted = Signal(str)
+
+    def __init__(self):
+        logging.Handler.__init__(self)
+        QObject.__init__(self)
+        # 仅放行我们自己写的模块日志去界面，避免 PIL/exifread 等第三方库海量DEBUG刷屏
+        self.addFilter(lambda record: record.name in (
+            'utils', 'semi_bridge', 'entity', 'gen_video', 'main_gui', '__main__', 'init'
+        ) or record.name.startswith('entity.'))
+
+    def emit(self, record):
+        msg = self.format(record)
+        self.log_emitted.emit(msg)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -310,6 +382,20 @@ class MainWindow(QMainWindow):
         self.selected_source_files: list[str] = []
         self.current_preview_source: Path | None = None
         self.logo_auto_selected_source: str | None = None
+
+        self.gui_log_handler = GuiLogHandler()
+        self.gui_log_handler.setFormatter(logging.Formatter("%(levelname)s - %(message)s"))
+        self.gui_log_handler.setLevel(logging.DEBUG)
+        self.gui_log_handler.log_emitted.connect(self._append_log)
+        
+        logging.getLogger().addHandler(self.gui_log_handler)
+        logging.getLogger().setLevel(logging.DEBUG)
+        
+        logging.getLogger("utils").setLevel(logging.DEBUG)
+        logging.getLogger("semi_bridge").setLevel(logging.DEBUG)
+        logging.getLogger("entity").setLevel(logging.DEBUG)
+        logging.getLogger("PIL").setLevel(logging.INFO)
+        logging.getLogger("exifread").setLevel(logging.INFO)
 
         self._build_ui()
         self._apply_styles()
@@ -493,10 +579,10 @@ class MainWindow(QMainWindow):
         self.input_dir_edit = QLineEdit()
         self.output_dir_edit = QLineEdit()
 
-        self.input_browse_btn = QPushButton("浏览")
+        self.input_browse_btn = QPushButton("浏览文件夹")
         self.input_files_btn = QPushButton("选择图片")
         self.clear_files_btn = QPushButton("清空图片")
-        self.output_browse_btn = QPushButton("浏览")
+        self.output_browse_btn = QPushButton("浏览文件夹")
 
         input_row = QHBoxLayout()
         input_row.addWidget(self.input_dir_edit)
@@ -895,8 +981,19 @@ class MainWindow(QMainWindow):
         self._schedule_realtime_preview()
 
         self._append_log("配置已加载，可直接开始处理。")
-        self._append_log(f"EXIF 读取模式：{_runtime_exif_backend_label()}")
-        self._append_log(f"ExifTool 兜底路径：{runtime_utils.EXIFTOOL_PATH}")
+        self._append_log(f"EXIF 读取模式：{self.exif_backend_combo.currentText()}")
+        self._append_log(f"ExifTool 备用路径（未调用）：{runtime_utils.EXIFTOOL_PATH}")
+        self._append_log(
+            "ExifTool stay_open："
+            f"{'启用' if getattr(runtime_utils, 'EXIFTOOL_USE_STAY_OPEN', False) else '关闭（默认）'}"
+        )
+        logger.info(
+            "Runtime loaded. EXIF backend=%s, exiftool_stay_open=%s, config=%s, startup_log=%s",
+            self.exif_backend_combo.currentData(),
+            getattr(runtime_utils, "EXIFTOOL_USE_STAY_OPEN", False),
+            os.environ.get("SEMI_UTILS_CONFIG", ""),
+            STARTUP_LOG_PATH,
+        )
 
     def _populate_static_options(self) -> None:
         self.layout_combo.clear()
@@ -979,7 +1076,8 @@ class MainWindow(QMainWindow):
 
         apply_runtime_config_from_values(settings, save=True)
         self._append_log("配置保存成功。")
-        self._append_log(f"EXIF 读取模式：{_runtime_exif_backend_label()}")
+        self._append_log(f"EXIF 读取模式：{self.exif_backend_combo.currentText()}")
+        logger.info("Config saved. EXIF backend=%s", self.exif_backend_combo.currentData())
         QMessageBox.information(self, "完成", "配置已保存。")
 
     def _start_processing(self) -> None:
@@ -1230,8 +1328,10 @@ class MainWindow(QMainWindow):
 
     def _schedule_realtime_preview(self, *_args) -> None:
         if self.realtime_preview_paused:
+            logger.debug("实时预览调度跳过：当前处于暂停状态")
             return
         self.preview_timer.start(PREVIEW_DEBOUNCE_MS)
+        logger.debug("实时预览已调度：%d ms 后触发", PREVIEW_DEBOUNCE_MS)
 
     def _on_exif_backend_changed(self, *_args) -> None:
         self.preview_exif_source_key = None
@@ -1241,12 +1341,16 @@ class MainWindow(QMainWindow):
 
     def _refresh_preview_now(self) -> None:
         if self.realtime_preview_paused:
+            logger.info("实时预览刷新跳过：当前处于暂停状态")
             return
         if self.processing_thread is not None or self.video_thread is not None:
+            logger.info("实时预览刷新跳过：当前有处理任务或视频任务正在运行")
             return
 
+        logger.info("实时预览刷新触发")
         preview_source = self._resolve_preview_source_path()
         if preview_source is None:
+            logger.warning("实时预览刷新停止：未找到可用图片")
             self.preview_latest_request_id += 1
             self.preview_pending = False
             self.preview_pending_source = None
@@ -1260,19 +1364,23 @@ class MainWindow(QMainWindow):
             self._clear_exif_info_panels()
             return
 
+        logger.info("实时预览源图片：%s", preview_source)
         settings = self._collect_form_settings()
         signature = self._make_preview_signature(preview_source, settings)
         if self.preview_busy:
             if signature == self.preview_active_signature or signature == self.preview_pending_signature:
+                logger.debug("实时预览刷新跳过：相同签名的渲染已在运行或等待中")
                 return
             self.preview_pending = True
             self.preview_pending_source = preview_source
             self.preview_pending_settings = settings
             self.preview_pending_signature = signature
             self.preview_status_label.setText("状态：正在渲染，稍后刷新最新预览...")
+            logger.info("实时预览已有任务运行，已登记新的待刷新请求：%s", preview_source)
             return
 
         if signature == self.preview_last_rendered_signature:
+            logger.debug("实时预览刷新跳过：当前设置和图片已经渲染过")
             return
 
         self._dispatch_preview_request(preview_source, settings, signature)
@@ -1295,6 +1403,13 @@ class MainWindow(QMainWindow):
             self.preview_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="preview-render")
             self.preview_result_timer.start()
 
+        source_exif = self._get_preview_exif_from_memory(preview_source)
+        logger.info(
+            "实时预览请求已提交：id=%d，source=%s，复用内存 EXIF=%s",
+            request_id,
+            preview_source,
+            source_exif is not None,
+        )
         self.preview_executor.submit(
             self._render_preview_background,
             self.preview_results,
@@ -1302,7 +1417,7 @@ class MainWindow(QMainWindow):
             str(preview_source),
             settings.copy(),
             signature,
-            self._get_preview_exif_from_memory(preview_source),
+            source_exif,
         )
 
     @staticmethod
@@ -1316,6 +1431,12 @@ class MainWindow(QMainWindow):
     ) -> None:
         after_image = None
         try:
+            logger.info(
+                "实时预览后台渲染开始：id=%d，source=%s，传入 EXIF=%s",
+                request_id,
+                Path(preview_source).name,
+                source_exif is not None,
+            )
             after_image, exif_preview, raw_exif, message = build_preview_image_with_exif(
                 preview_source,
                 settings,
@@ -1323,11 +1444,18 @@ class MainWindow(QMainWindow):
                 exif=source_exif,
             )
             preview_data = MainWindow._pil_to_preview_rgba(after_image)
+            logger.info(
+                "实时预览后台渲染完成：id=%d，source=%s，EXIF 字段数=%d",
+                request_id,
+                Path(preview_source).name,
+                len(raw_exif) if isinstance(raw_exif, dict) else 0,
+            )
             MainWindow._put_latest_preview_result(
                 result_queue,
                 ("rendered", request_id, preview_source, preview_data, exif_preview, raw_exif, message, signature),
             )
         except Exception as exc:
+            logger.exception("实时预览后台渲染失败：id=%d，source=%s", request_id, preview_source)
             MainWindow._put_latest_preview_result(
                 result_queue,
                 ("failed", request_id, preview_source, None, None, None, str(exc), signature),
@@ -1478,6 +1606,12 @@ class MainWindow(QMainWindow):
                 return
             source_path = Path(preview_source)
             self._store_preview_exif(source_path, raw_exif)
+            logger.info(
+                "实时预览结果已接收：id=%d，source=%s，EXIF 字段数=%d",
+                request_id,
+                source_path.name,
+                len(raw_exif) if isinstance(raw_exif, dict) else 0,
+            )
             if self.preview_pending:
                 self.preview_status_label.setText("状态：正在刷新最新预览...")
                 return
@@ -1512,6 +1646,7 @@ class MainWindow(QMainWindow):
             self._schedule_pending_preview_dispatch()
 
     def _on_preview_failed(self, request_id: int, message: str) -> None:
+        logger.warning("实时预览结果失败：id=%d，原因=%s", request_id, message)
         if request_id == self.preview_latest_request_id and not self.preview_pending:
             self.preview_status_label.setText(f"状态：实时预览失败：{message}")
             self._append_log(f"实时预览失败：{message}")
@@ -1670,15 +1805,27 @@ class MainWindow(QMainWindow):
         close_exiftool_session = getattr(runtime_utils, "close_exiftool_session", None)
         if callable(close_exiftool_session):
             close_exiftool_session()
+        logging.getLogger().removeHandler(self.gui_log_handler)
         super().closeEvent(event)
 
 
 def main() -> None:
-    app = QApplication(sys.argv)
-    app.setFont(QFont("Microsoft YaHei UI", 10))
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
+    try:
+        _append_startup_log("Creating QApplication.")
+        app = QApplication(sys.argv)
+        app.setFont(QFont("Microsoft YaHei UI", 10))
+        _append_startup_log("Creating MainWindow.")
+        window = MainWindow()
+        window.show()
+        _append_startup_log("Entering Qt event loop.")
+        exit_code = app.exec()
+        _append_startup_log(f"Qt event loop exited: {exit_code}")
+        sys.exit(exit_code)
+    except SystemExit:
+        raise
+    except BaseException:
+        _append_startup_exception("Fatal error in main()", *sys.exc_info())
+        raise
 
 
 if __name__ == "__main__":

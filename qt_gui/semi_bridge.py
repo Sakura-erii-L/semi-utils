@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from io import StringIO
 from pathlib import Path
+import sys
 from typing import Callable
 
 from PIL import Image as PILImage
@@ -117,7 +118,10 @@ def get_default_logo_options() -> list[tuple[str, str]]:
 
 def get_font_options() -> list[tuple[str, str]]:
     """返回可选字体列表，优先扫描 qt_gui/fonts，并补充当前配置中的字体路径。"""
-    fonts_dir = Path(__file__).resolve().parent.joinpath("fonts")
+    app_dir = getattr(sys, '_MEIPASS', Path(__file__).resolve().parent)
+    if isinstance(app_dir, str):
+        app_dir = Path(app_dir)
+    fonts_dir = app_dir.joinpath("fonts")
     options: list[tuple[str, str]] = []
     seen: set[str] = set()
     allowed_suffixes = {".ttf", ".otf", ".ttc", ".otc"}
@@ -246,9 +250,14 @@ def apply_runtime_config_from_values(values: dict, save: bool = True, ensure_out
         values.get("padding_ratio", global_data["padding_with_original_ratio"].get("enable", False))
     )
     exif_data = global_data.setdefault("exif", {})
+    previous_exif_backend = get_exif_backend()
     exif_backend = normalize_exif_backend(values.get("exif_backend", exif_data.get("backend", EXIF_BACKEND_PYTHON)))
     exif_data["backend"] = exif_backend
     set_exif_backend(exif_backend)
+    if previous_exif_backend != exif_backend:
+        logger.info("EXIF backend changed: %s -> %s", previous_exif_backend, exif_backend)
+    else:
+        logger.debug("EXIF backend active: %s", exif_backend)
 
     element_values = values.get("elements", {})
     for location in LOCATION_KEYS:
@@ -328,12 +337,18 @@ def _process_one_image(
     runtime_backup: dict[str, tuple[str, str]] = {}
     try:
         source_exif = get_exif(source_path, on_message=on_message)
+        if on_message:
+            on_message(f"[{source_path.name}] 开始加载图像数据...")
         container = ImageContainer(source_path, exif=source_exif)
         container.is_use_equivalent_focal_length(config.use_equivalent_focal_length())
         runtime_backup = _apply_photographer_runtime_mapping(container)
+        if on_message:
+            on_message(f"[{source_path.name}] 开始图像处理（添加边框/水印/文字等）...")
         processor_chain.process(container)
 
         target_path = _resolve_target_path(source_path)
+        if on_message:
+            on_message(f"[{source_path.name}] 图像处理完成，保存至 -> {target_path} ...")
         container.save(target_path, quality=config.get_quality())
 
         return True, f"完成：{source_path.name} -> {target_path}"
@@ -403,9 +418,12 @@ def _get_cached_preview_exif(sample_file: Path, on_message: Callable[[str], None
     cache_token = (stat.st_mtime_ns, stat.st_size)
     cached = _preview_exif_cache.get(cache_key)
     if cached is not None and cached[0] == cache_token:
+        logger.info("预览 EXIF 缓存命中：%s", sample_file.name)
         return cached[1].copy()
 
+    logger.info("预览 EXIF 缓存未命中，准备读取：%s，后端=%s", sample_file.name, get_exif_backend())
     exif = get_exif(sample_file, on_message=on_message)
+    logger.info("预览 EXIF 读取完成：%s，字段数=%d", sample_file.name, len(exif))
     _preview_exif_cache[cache_key] = (cache_token, exif.copy())
     while len(_preview_exif_cache) > _PREVIEW_EXIF_CACHE_MAX:
         _preview_exif_cache.pop(next(iter(_preview_exif_cache)))
@@ -492,6 +510,7 @@ def build_preview_image_with_exif(
     if not sample_file.exists() or not sample_file.is_file():
         raise FileNotFoundError(f"示例图片不存在：{sample_file}")
 
+    logger.info("实时预览开始：%s，复用内存 EXIF=%s", sample_file.name, exif is not None)
     apply_runtime_config_from_values(values, save=False, ensure_output_dir=False)
 
     container = None
@@ -512,6 +531,7 @@ def build_preview_image_with_exif(
         after = _resize_for_preview(container.get_watermark_img(), max_side=max_side)
 
         message = "\n".join(exif_messages)
+        logger.info("实时预览生成完成：%s，EXIF 字段数=%d", sample_file.name, len(source_exif))
         return after, exif_preview, source_exif.copy(), message
     except Exception as exc:
         if after is not None:

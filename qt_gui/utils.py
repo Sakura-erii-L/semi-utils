@@ -1,5 +1,6 @@
 import logging
 import atexit
+import os
 import platform
 import re
 import shutil
@@ -21,7 +22,9 @@ from PIL import ImageOps
 
 from enums.constant import TRANSPARENT
 
-_RUNTIME_DIR = Path(__file__).resolve().parent
+_RUNTIME_DIR = getattr(sys, '_MEIPASS', Path(__file__).resolve().parent)
+if isinstance(_RUNTIME_DIR, str):
+    _RUNTIME_DIR = Path(_RUNTIME_DIR)
 
 
 def _resolve_exiftool_path():
@@ -65,6 +68,12 @@ ENCODING = 'gbk' if platform.system() == 'Windows' else 'utf-8'
 EXIF_BACKEND_PYTHON = 'python'
 EXIF_BACKEND_EXIFTOOL = 'exiftool'
 _EXIF_BACKEND = EXIF_BACKEND_PYTHON
+EXIFTOOL_USE_STAY_OPEN = str(os.getenv('SEMI_UTILS_EXIFTOOL_STAY_OPEN', '')).strip().lower() in {
+    '1',
+    'true',
+    'yes',
+    'on',
+}
 _WINDOWS_NO_WINDOW_KWARGS = {}
 if platform.system() == 'Windows':
     _WINDOWS_NO_WINDOW_KWARGS['creationflags'] = subprocess.CREATE_NO_WINDOW
@@ -74,6 +83,60 @@ if platform.system() == 'Windows':
     _WINDOWS_NO_WINDOW_KWARGS['startupinfo'] = startupinfo
 
 logger = logging.getLogger(__name__)
+EXIFTOOL_AUDIT_PREFIX = '【ExifTool 调用警告】'
+SUBPROCESS_AUDIT_PREFIX = '【子进程调用审计】'
+_ORIGINAL_SUBPROCESS_POPEN = subprocess.Popen
+_ORIGINAL_SUBPROCESS_CHECK_OUTPUT = subprocess.check_output
+_SUBPROCESS_AUDIT_INSTALLED = False
+
+
+def _format_command_args(args) -> str:
+    return ' '.join(str(arg) for arg in args)
+
+
+def _emit_exiftool_audit(
+    action: str,
+    args: list[str | Path] | tuple | None = None,
+    on_message: Callable[[str], None] | None = None,
+) -> None:
+    args_text = f"; args={_format_command_args(args)}" if args else ""
+    message = f"{EXIFTOOL_AUDIT_PREFIX}{action}; executable={EXIFTOOL_PATH}{args_text}"
+    logger.warning(message)
+    if on_message is None:
+        return
+    try:
+        on_message(message)
+    except Exception:
+        logger.exception('Failed to forward ExifTool audit message.')
+
+
+def _emit_subprocess_audit(action: str, args) -> None:
+    logger.warning(
+        '%s%s; args=%s',
+        SUBPROCESS_AUDIT_PREFIX,
+        action,
+        _format_command_args(args) if isinstance(args, (list, tuple)) else str(args),
+    )
+
+
+class AuditedPopen(_ORIGINAL_SUBPROCESS_POPEN):
+    def __init__(self, args, *popen_args, **popen_kwargs):
+        _emit_subprocess_audit('即将启动子进程', args)
+        super().__init__(args, *popen_args, **popen_kwargs)
+
+
+def _audited_check_output(args, *check_args, **check_kwargs):
+    _emit_subprocess_audit('即将通过 check_output 启动子进程', args)
+    return _ORIGINAL_SUBPROCESS_CHECK_OUTPUT(args, *check_args, **check_kwargs)
+
+
+def install_subprocess_audit() -> None:
+    global _SUBPROCESS_AUDIT_INSTALLED
+    if _SUBPROCESS_AUDIT_INSTALLED:
+        return
+    subprocess.Popen = AuditedPopen
+    subprocess.check_output = _audited_check_output
+    _SUBPROCESS_AUDIT_INSTALLED = True
 
 
 def _notify_exif_issue(message: str, on_message: Callable[[str], None] | None = None) -> None:
@@ -94,7 +157,10 @@ def normalize_exif_backend(backend: str | None) -> str:
 
 def set_exif_backend(backend: str | None) -> None:
     global _EXIF_BACKEND
-    _EXIF_BACKEND = normalize_exif_backend(backend)
+    normalized_backend = normalize_exif_backend(backend)
+    if _EXIF_BACKEND != normalized_backend:
+        logger.info('EXIF backend set: %s -> %s', _EXIF_BACKEND, normalized_backend)
+    _EXIF_BACKEND = normalized_backend
 
 
 def get_exif_backend() -> str:
@@ -106,7 +172,16 @@ def subprocess_no_window_kwargs() -> dict:
 
 
 def check_output_no_window(args):
-    return subprocess.check_output(args, **subprocess_no_window_kwargs())
+    cmd_str = ' '.join(str(a) for a in args)
+    logger.debug(f"执行终端命令：{cmd_str}")
+    if 'exiftool' in cmd_str.lower():
+        _emit_exiftool_audit('即将启动一次性 exiftool.exe 子进程', args)
+    return subprocess.check_output(
+        args,
+        stderr=subprocess.DEVNULL,
+        timeout=60,
+        **subprocess_no_window_kwargs(),
+    )
 
 
 class ExifToolSession:
@@ -117,9 +192,10 @@ class ExifToolSession:
     def _start_locked(self) -> None:
         if self._process is not None and self._process.poll() is None:
             return
-
+        start_args = [EXIFTOOL_PATH, '-stay_open', 'True', '-@', '-']
+        _emit_exiftool_audit('即将启动 exiftool.exe stay_open 后台进程', start_args)
         self._process = subprocess.Popen(
-            [EXIFTOOL_PATH, '-stay_open', 'True', '-@', '-'],
+            start_args,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -136,6 +212,7 @@ class ExifToolSession:
                 if self._process is None or self._process.stdin is None or self._process.stdout is None:
                     raise RuntimeError('exiftool stay_open session is unavailable')
 
+                _emit_exiftool_audit('即将向 exiftool.exe stay_open 进程发送命令', args)
                 command = ''.join(f'{arg}\n' for arg in args)
                 self._process.stdin.write(command)
                 self._process.stdin.write('-execute\n')
@@ -186,6 +263,8 @@ atexit.register(close_exiftool_session)
 
 
 def send_exiftool_command(args: list[str | Path]) -> str:
+    if not EXIFTOOL_USE_STAY_OPEN:
+        raise RuntimeError('exiftool stay_open is disabled')
     return _EXIFTOOL_SESSION.execute(args)
 
 
@@ -210,11 +289,22 @@ def _parse_exiftool_output(output: str) -> dict:
     return _clean_exif_dict(exif_dict)
 
 
-def _get_exif_with_exiftool(path) -> dict:
+def _get_exif_with_exiftool(path, on_message: Callable[[str], None] | None = None) -> dict:
+    read_args = ['-d', '%Y-%m-%d %H:%M:%S%3f%z', path]
+    _emit_exiftool_audit('即将使用 exiftool.exe 读取 EXIF', read_args, on_message=on_message)
+    if not EXIFTOOL_USE_STAY_OPEN:
+        fallback_args = [EXIFTOOL_PATH, *read_args]
+        _emit_exiftool_audit('stay_open 已禁用，使用一次性 exiftool.exe 子进程', fallback_args, on_message=on_message)
+        output_bytes = check_output_no_window(fallback_args)
+        output = output_bytes.decode('utf-8', errors='ignore')
+        return _parse_exiftool_output(output)
+
     try:
-        output = send_exiftool_command(['-d', '%Y-%m-%d %H:%M:%S%3f%z', path])
+        output = send_exiftool_command(read_args)
     except Exception:
-        output_bytes = check_output_no_window([EXIFTOOL_PATH, '-d', '%Y-%m-%d %H:%M:%S%3f%z', path])
+        fallback_args = [EXIFTOOL_PATH, *read_args]
+        _emit_exiftool_audit('stay_open 不可用，即将回退为一次性 exiftool.exe 子进程', fallback_args, on_message=on_message)
+        output_bytes = check_output_no_window(fallback_args)
         output = output_bytes.decode('utf-8', errors='ignore')
     return _parse_exiftool_output(output)
 
@@ -471,18 +561,27 @@ def _get_exif_with_pillow(path) -> dict:
     return _clean_exif_dict(exif_dict)
 
 
-def _get_exif_with_python(path) -> dict:
+def _get_exif_with_python(path, on_message: Callable[[str], None] | None = None) -> tuple[dict, str]:
     errors = []
+    
+    msg_exifread = f"[{Path(path).name}] 正在调用 _get_exif_with_exifread 读取 EXIF..."
+    logger.debug(msg_exifread)
+    if on_message:
+        on_message(msg_exifread)
     try:
-        return _get_exif_with_exifread(path)
+        return _get_exif_with_exifread(path), "exifread"
     except Exception as exc:
         errors.append(f'exifread: {exc}')
 
+    msg_pillow = f"[{Path(path).name}] exifread 读取失败，正在调用 _get_exif_with_pillow 重新读取 EXIF..."
+    logger.debug(msg_pillow)
+    if on_message:
+        on_message(msg_pillow)
     try:
         exif_dict = _get_exif_with_pillow(path)
         if exif_dict:
             logger.debug('EXIF read with Pillow fallback after Python reader issue: %s', '; '.join(errors))
-            return exif_dict
+            return exif_dict, "pillow"
     except Exception as exc:
         errors.append(f'pillow: {exc}')
 
@@ -507,33 +606,38 @@ def get_exif(path, on_message: Callable[[str], None] | None = None) -> dict:
     :return: exif信息
     """
     path_obj = Path(path)
-
+    start_message = f'[{path_obj.name}] get_exif 开始，当前 EXIF 后端：{get_exif_backend()}'
+    logger.info(start_message)
+    if on_message is not None:
+        on_message(start_message)
     if get_exif_backend() == EXIF_BACKEND_EXIFTOOL:
+        msg_tool = f"[{path_obj.name}] 正在调用 _get_exif_with_exiftool 读取 EXIF..."
+        logger.debug(msg_tool)
+        if on_message:
+            on_message(msg_tool)
         try:
-            return _get_exif_with_exiftool(path)
+            exif_dict = _get_exif_with_exiftool(path, on_message=on_message)
+            message = f'[{path_obj.name}] ExifTool EXIF 读取成功'
+            logger.info(message)
+            if on_message is not None:
+                on_message(message)
+            return exif_dict
         except Exception as e:
-            message = f'ExifTool EXIF 读取失败：{path_obj.name}，原因：{e}'
+            message = f'[{path_obj.name}] ExifTool EXIF 读取失败，原因：{e}'
             logger.error(message)
             if on_message is not None:
                 on_message(message)
             return {}
 
     try:
-        exif_dict = _get_exif_with_python(path)
-        logger.debug('EXIF read with Python readers: %s', path)
+        exif_dict, backend_name = _get_exif_with_python(path, on_message=on_message)
+        message = f'[{path_obj.name}] Python EXIF 读取成功 ({backend_name})'
+        logger.info(message)
+        if on_message is not None:
+            on_message(message)
         return exif_dict
     except Exception as python_error:
-        _notify_exif_issue(
-            f'Python EXIF 读取失败，将使用 ExifTool 兜底：{path_obj.name}，原因：{python_error}',
-            on_message=on_message,
-        )
-
-    try:
-        exif_dict = _get_exif_with_exiftool(path)
-        logger.info('EXIF read with ExifTool fallback: %s', path)
-        return exif_dict
-    except Exception as e:
-        message = f'ExifTool EXIF 读取失败：{path_obj.name}，原因：{e}'
+        message = f'[{path_obj.name}] Python EXIF 读取失败 (尝试过 exifread/pillow)，原因：{python_error}'
         logger.error(message)
         if on_message is not None:
             on_message(message)
@@ -546,9 +650,16 @@ def insert_exif(source_path, target_path) -> None:
     :param source_path: 源照片路径
     :param target_path: 目的照片路径
     """
+    if get_exif_backend() != EXIF_BACKEND_EXIFTOOL:
+        # 如果未手动切换到 ExifTool，则跳过调用 ExifTool
+        logger.debug(f"[{Path(source_path).name}] 当前未使用 ExifTool 模式，跳过 insert_exif。")
+        return
+
     try:
         # 将 exif 信息转换为字节串
-        check_output_no_window([EXIFTOOL_PATH, '-tagsfromfile', source_path, '-overwrite_original', target_path])
+        args = [EXIFTOOL_PATH, '-tagsfromfile', source_path, '-overwrite_original', target_path]
+        _emit_exiftool_audit('即将使用 exiftool.exe 写回 EXIF', args)
+        check_output_no_window(args)
     except ValueError as e:
         logger.exception(f'ValueError: {source_path}: cannot insert exif {str(e)}')
 

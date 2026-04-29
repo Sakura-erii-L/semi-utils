@@ -1,5 +1,6 @@
 import logging
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,28 +25,32 @@ from entity.menu import *
 from enums.constant import *
 from gen_video import generate_video
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = getattr(sys, '_MEIPASS', Path(__file__).resolve().parent)
+if isinstance(BASE_DIR, str):
+    BASE_DIR = Path(BASE_DIR)
+
 DEFAULT_CONFIG_PATH = BASE_DIR.joinpath('config.yaml')
 CONFIG_PATH = Path(os.getenv('SEMI_UTILS_CONFIG', str(DEFAULT_CONFIG_PATH))).resolve()
 
 # 如果 logs 不存在，创建 logs
-Path('./logs').mkdir(parents=True, exist_ok=True)
+LOGS_DIR = BASE_DIR.joinpath('logs')
+LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 # 格式化日志输出
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-# 添加一个 FileHandler 处理器，将 INFO 级别日志写入 ./logs/info.log 文件中
-info_handler = logging.FileHandler('./logs/info.log', mode='w', encoding='utf-8')
+# 添加一个 FileHandler 处理器，将 INFO 级别日志写入 logs/info.log 文件中
+info_handler = logging.FileHandler(str(LOGS_DIR.joinpath('info.log')), mode='w', encoding='utf-8')
 info_handler.setLevel(logging.INFO)
 info_handler.setFormatter(formatter)
 
-# 添加一个 FileHandler 处理器，将 ERROR 级别日志写入 ./logs/error.log 文件中
-error_handler = logging.FileHandler('./logs/error.log', mode='w', encoding='utf-8')
+# 添加一个 FileHandler 处理器，将 ERROR 级别日志写入 logs/error.log 文件中
+error_handler = logging.FileHandler(str(LOGS_DIR.joinpath('error.log')), mode='w', encoding='utf-8')
 error_handler.setLevel(logging.ERROR)
 error_handler.setFormatter(formatter)
 
-# 添加一个 FileHandler 处理器，将 DEBUG 级别日志写入 ./logs/all.log 文件中
-debug_handler = logging.FileHandler('./logs/all.log', mode='w', encoding='utf-8')
+# 添加一个 FileHandler 处理器，将 DEBUG 级别日志写入 logs/all.log 文件中
+debug_handler = logging.FileHandler(str(LOGS_DIR.joinpath('all.log')), mode='w', encoding='utf-8')
 debug_handler.setLevel(logging.DEBUG)
 debug_handler.setFormatter(formatter)
 
@@ -61,7 +66,7 @@ from utils import EXIFTOOL_PATH
 
 logger = logging.getLogger(__name__)
 logger.info('Config path: %s', CONFIG_PATH)
-logger.info('ExifTool executable available at: %s', EXIFTOOL_PATH)
+logger.debug('ExifTool 仅作为备用解析器被探测，位于: %s', EXIFTOOL_PATH)
 
 SEPARATE_LINE = '+' + '-' * 15 + '+' + '-' * 15 + '+'
 

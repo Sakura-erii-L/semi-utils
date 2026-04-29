@@ -1,5 +1,5 @@
 @echo off
-setlocal EnableExtensions EnableDelayedExpansion
+setlocal EnableExtensions
 
 set "SCRIPT_DIR=%~dp0"
 for %%I in ("%SCRIPT_DIR%.") do set "ROOT_DIR=%%~fI"
@@ -11,9 +11,11 @@ cd /d "%ROOT_DIR%" || (
 )
 
 set "LOCK_DIR=%ROOT_DIR%\.build_release.lock"
-set "LOG_ROOT=%ROOT_DIR%\logs"
+set "RUNTIME_LOG_ROOT=%ROOT_DIR%\logs"
+set "LOG_ROOT=%RUNTIME_LOG_ROOT%\build"
 set "LATEST_LOG_FILE=%LOG_ROOT%\build_release.log"
 set "TEMP_DIR=%ROOT_DIR%\temp"
+set "STAGE_DIR=%TEMP_DIR%\source"
 set "BUILD_ROOT=%TEMP_DIR%\pyinstaller-build"
 set "PYINSTALLER_CONFIG_DIR=%TEMP_DIR%\pyinstaller-cache"
 set "PORTABLE_ROOT=%ROOT_DIR%\portable"
@@ -21,8 +23,9 @@ set "APP_DIR=%PORTABLE_ROOT%\SemiUtilsQt"
 set "ZIP_PATH=%PORTABLE_ROOT%\SemiUtilsQt-windows.zip"
 set "EMBEDDED_EXAMPLE_MODULE=semi_embedded_example_asset"
 set "EMBEDDED_EXAMPLE_SOURCE=%ROOT_DIR%\example.jpg"
-set "EMBEDDED_EXAMPLE_MODULE_PATH=%TEMP_DIR%\%EMBEDDED_EXAMPLE_MODULE%.py"
+set "EMBEDDED_EXAMPLE_MODULE_PATH=%STAGE_DIR%\%EMBEDDED_EXAMPLE_MODULE%.py"
 set "CONDA_ENV_NAME=semi-utils"
+set "MAMBA_BUILD_PACKAGES=pyinstaller exifread pyside6 pillow pyyaml python-dateutil requests tqdm"
 set "EXIT_CODE=1"
 
 mkdir "%LOCK_DIR%" 2>nul
@@ -40,6 +43,7 @@ if not defined BUILD_STAMP set "BUILD_STAMP=unknown_%RANDOM%%RANDOM%"
 for /f "usebackq delims=" %%P in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$PID" 2^>nul`) do set "BUILD_PID=%%P"
 if not defined BUILD_PID set "BUILD_PID=%RANDOM%%RANDOM%"
 
+if not exist "%RUNTIME_LOG_ROOT%\" mkdir "%RUNTIME_LOG_ROOT%" 2>nul
 if not exist "%LOG_ROOT%\" mkdir "%LOG_ROOT%" 2>nul
 if not exist "%LOG_ROOT%\" (
     echo ERROR: Could not create build log directory:
@@ -82,6 +86,21 @@ if errorlevel 1 (
 for /f "usebackq delims=" %%P in (`python -c "import sys; print(sys.executable)"`) do set "PYTHON_EXE=%%P"
 if defined PYTHON_EXE call :log "Python executable: %PYTHON_EXE%"
 
+python -c "import os, sys; prefix=os.environ.get('CONDA_PREFIX', ''); exe=sys.executable; raise SystemExit(0 if prefix and exe.lower().startswith(prefix.lower()) and os.environ.get('CONDA_DEFAULT_ENV') == '%CONDA_ENV_NAME%' else 1)" >> "%LOG_FILE%" 2>&1
+if errorlevel 1 (
+    call :log "ERROR: Build must use the conda environment: %CONDA_ENV_NAME%."
+    echo ERROR: Build must use the conda environment:
+    echo   %CONDA_ENV_NAME%
+    echo Current Python:
+    echo   %PYTHON_EXE%
+    set "EXIT_CODE=1"
+    goto :finish
+)
+
+set "PYTHONPATH="
+set "PYTHONNOUSERSITE=1"
+set "PYINSTALLER_CONFIG_DIR=%PYINSTALLER_CONFIG_DIR%"
+
 for /f "usebackq delims=" %%V in (`python -c "import sys; print(sys.version.split()[0])"`) do set "PYTHON_VERSION=%%V"
 call :log "Python: %PYTHON_VERSION%"
 
@@ -93,14 +112,30 @@ if errorlevel 1 (
     goto :finish
 )
 
+set "BUILD_DEPS_AVAILABLE="
+python -c "import PyInstaller, exifread, PySide6, PIL, yaml, dateutil, requests, tqdm; print('Build/runtime dependencies already available.')" >> "%LOG_FILE%" 2>&1
+if not errorlevel 1 set "BUILD_DEPS_AVAILABLE=1"
+
 if /I "%SKIP_BUILD_DEPS%"=="1" (
     call :log "Skipping build dependency installation because SKIP_BUILD_DEPS=1."
+) else if defined BUILD_DEPS_AVAILABLE (
+    call :log "Build dependencies are already available; skipping dependency installation."
 ) else (
-    call :log "Installing or updating build dependencies."
-    python -m pip install --upgrade pip setuptools wheel pyinstaller exifread >> "%LOG_FILE%" 2>&1
+    call :log "Installing missing build dependencies with mamba."
+    call :resolve_mamba
     if errorlevel 1 (
-        call :log "ERROR: Failed to install build dependencies. See %LOG_FILE%."
-        echo ERROR: Failed to install build dependencies. See:
+        call :log "ERROR: mamba was not found. Install mamba in conda base or preinstall build/runtime dependencies in %CONDA_ENV_NAME%."
+        echo ERROR: mamba was not found.
+        echo Install mamba in conda base or preinstall these packages in %CONDA_ENV_NAME%:
+        echo   %MAMBA_BUILD_PACKAGES%
+        set "EXIT_CODE=1"
+        goto :finish
+    )
+    call :log "Using mamba: %MAMBA_EXE%"
+    "%MAMBA_EXE%" install -y -n "%CONDA_ENV_NAME%" -c conda-forge %MAMBA_BUILD_PACKAGES% >> "%LOG_FILE%" 2>&1
+    if errorlevel 1 (
+        call :log "ERROR: Failed to install build dependencies with mamba. See %LOG_FILE%."
+        echo ERROR: Failed to install build dependencies with mamba. See:
         echo   %LOG_FILE%
         set "EXIT_CODE=1"
         goto :finish
@@ -119,6 +154,15 @@ python -c "import exifread; print('exifread', getattr(exifread, '__version__', '
 if errorlevel 1 (
     call :log "ERROR: exifread is not available. Install dependencies or run without SKIP_BUILD_DEPS=1."
     echo ERROR: exifread is not available. See:
+    echo   %LOG_FILE%
+    set "EXIT_CODE=1"
+    goto :finish
+)
+
+python -c "import PySide6, PIL, yaml, dateutil, requests, tqdm; print('Runtime dependencies verified.')" >> "%LOG_FILE%" 2>&1
+if errorlevel 1 (
+    call :log "ERROR: Runtime dependencies are not available. Install dependencies or run without SKIP_BUILD_DEPS=1."
+    echo ERROR: Runtime dependencies are not available. See:
     echo   %LOG_FILE%
     set "EXIT_CODE=1"
     goto :finish
@@ -144,6 +188,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-ChildItem -LiteralPa
 if not exist "%BUILD_ROOT%" mkdir "%BUILD_ROOT%" >> "%LOG_FILE%" 2>&1
 if not exist "%PORTABLE_ROOT%" mkdir "%PORTABLE_ROOT%" >> "%LOG_FILE%" 2>&1
 
+call :stage_python_sources
+if errorlevel 1 (
+    set "EXIT_CODE=1"
+    goto :finish
+)
+
 call :generate_embedded_example_asset
 if errorlevel 1 (
     set "EXIT_CODE=1"
@@ -151,6 +201,15 @@ if errorlevel 1 (
 )
 
 call :log "Running PyInstaller onedir build."
+pushd "%STAGE_DIR%" >> "%LOG_FILE%" 2>&1
+if errorlevel 1 (
+    call :log "ERROR: Could not switch to staged source directory: %STAGE_DIR%"
+    echo ERROR: Could not switch to staged source directory:
+    echo   %STAGE_DIR%
+    set "EXIT_CODE=1"
+    goto :finish
+)
+
 python -m PyInstaller ^
     --noconfirm ^
     --clean ^
@@ -158,8 +217,7 @@ python -m PyInstaller ^
     --contents-directory "." ^
     --windowed ^
     --name SemiUtilsQt ^
-    --paths "%ROOT_DIR%" ^
-    --paths "%TEMP_DIR%" ^
+    --paths "%STAGE_DIR%" ^
     --hidden-import "%EMBEDDED_EXAMPLE_MODULE%" ^
     --hidden-import exifread ^
     --icon "%ROOT_DIR%\logo.ico" ^
@@ -171,8 +229,12 @@ python -m PyInstaller ^
     --add-data "%ROOT_DIR%\exiftool;exiftool" ^
     --add-data "%ROOT_DIR%\config.yaml;." ^
     --add-data "%ROOT_DIR%\logo.ico;." ^
+    --add-data "%ROOT_DIR%\LICENSE;." ^
+    --add-data "%ROOT_DIR%\ThirdPartyNotices.txt;." ^
     main_gui.py >> "%LOG_FILE%" 2>&1
-if errorlevel 1 (
+set "PYINSTALLER_EXIT_CODE=%ERRORLEVEL%"
+popd >> "%LOG_FILE%" 2>&1
+if not "%PYINSTALLER_EXIT_CODE%"=="0" (
     call :log "ERROR: PyInstaller build failed. See %LOG_FILE%."
     echo ERROR: PyInstaller build failed. See:
     echo   %LOG_FILE%
@@ -188,6 +250,12 @@ if not exist "%APP_DIR%\SemiUtilsQt.exe" (
 if exist "%APP_DIR%\example.jpg" (
     call :log "ERROR: example.jpg exists in portable output; it should be embedded in the exe."
     echo ERROR: example.jpg exists in portable output; it should be embedded in the exe.
+    set "EXIT_CODE=1"
+    goto :finish
+)
+
+call :verify_packaged_python_sources
+if errorlevel 1 (
     set "EXIT_CODE=1"
     goto :finish
 )
@@ -226,7 +294,11 @@ if exist "%ROOT_DIR%\bin" (
     xcopy "%ROOT_DIR%\bin\*" "%APP_DIR%\bin\" /E /I /Y >> "%LOG_FILE%" 2>&1
 )
 
-call :write_debug_runner
+if /I "%INCLUDE_DEBUG_RUNNER%"=="1" (
+    call :write_debug_runner
+) else (
+    call :log "Skipping debug console runner. Set INCLUDE_DEBUG_RUNNER=1 to include it."
+)
 
 call :log "Creating zip archive."
 call :create_zip
@@ -273,6 +345,29 @@ endlocal & exit /b %EXIT_CODE%
 >> "%APP_DIR%\debug_run_with_log.bat" echo pause
 exit /b 0
 
+:resolve_mamba
+set "MAMBA_EXE="
+if not defined CONDA_BASE if defined CONDA_PREFIX (
+    for %%B in ("%CONDA_PREFIX%\..\..") do (
+        if exist "%%~fB\Scripts\conda.exe" set "CONDA_BASE=%%~fB"
+    )
+)
+if defined CONDA_PREFIX (
+    if exist "%CONDA_PREFIX%\Library\bin\mamba.exe" set "MAMBA_EXE=%CONDA_PREFIX%\Library\bin\mamba.exe"
+    if not defined MAMBA_EXE if exist "%CONDA_PREFIX%\Scripts\mamba.exe" set "MAMBA_EXE=%CONDA_PREFIX%\Scripts\mamba.exe"
+)
+if defined CONDA_BASE (
+    if not defined MAMBA_EXE if exist "%CONDA_BASE%\Library\bin\mamba.exe" set "MAMBA_EXE=%CONDA_BASE%\Library\bin\mamba.exe"
+    if not defined MAMBA_EXE if exist "%CONDA_BASE%\Scripts\mamba.exe" set "MAMBA_EXE=%CONDA_BASE%\Scripts\mamba.exe"
+)
+if not defined MAMBA_EXE (
+    for /f "usebackq delims=" %%M in (`where mamba 2^>nul`) do (
+        if not defined MAMBA_EXE set "MAMBA_EXE=%%M"
+    )
+)
+if not defined MAMBA_EXE exit /b 1
+exit /b 0
+
 :ensure_conda_env
 if /I "%CONDA_DEFAULT_ENV%"=="%CONDA_ENV_NAME%" (
     call :log "Using active conda environment: %CONDA_DEFAULT_ENV%."
@@ -281,8 +376,10 @@ if /I "%CONDA_DEFAULT_ENV%"=="%CONDA_ENV_NAME%" (
 
 where conda >nul 2>nul
 if errorlevel 1 (
-    call :log "Conda was not found; using current Python from PATH."
-    exit /b 0
+    call :log "ERROR: Conda was not found; release build requires conda environment: %CONDA_ENV_NAME%."
+    echo ERROR: Conda was not found; release build requires conda environment:
+    echo   %CONDA_ENV_NAME%
+    exit /b 1
 )
 
 set "CONDA_BASE="
@@ -395,6 +492,38 @@ if defined STALE_SOURCE_FOUND (
 )
 exit /b 0
 
+:stage_python_sources
+call :log "Staging Python sources from qt_gui only for isolated PyInstaller analysis."
+set "SEMI_QT_STAGE_ROOT=%ROOT_DIR%"
+set "SEMI_QT_STAGE_DIR=%STAGE_DIR%"
+python "%ROOT_DIR%\build_tools\stage_qt_gui_sources.py" >> "%LOG_FILE%" 2>&1
+if errorlevel 1 (
+    call :log "ERROR: Failed to stage qt_gui-only Python sources."
+    echo ERROR: Failed to stage qt_gui-only Python sources. See:
+    echo   %LOG_FILE%
+    exit /b 1
+)
+call :log "Verifying staged imports resolve inside qt_gui staging directory."
+python "%ROOT_DIR%\build_tools\verify_staged_imports.py" >> "%LOG_FILE%" 2>&1
+if errorlevel 1 (
+    call :log "ERROR: Staged import verification failed; build would use modules outside qt_gui."
+    echo ERROR: Staged import verification failed. See:
+    echo   %LOG_FILE%
+    exit /b 1
+)
+exit /b 0
+
+:verify_packaged_python_sources
+call :log "Verifying packaged Python modules came from qt_gui staging sources."
+python "%ROOT_DIR%\build_tools\verify_packaged_modules.py" "%APP_DIR%\SemiUtilsQt.exe" >> "%LOG_FILE%" 2>&1
+if errorlevel 1 (
+    call :log "ERROR: Packaged source verification failed; PyInstaller used modules outside qt_gui."
+    echo ERROR: Packaged source verification failed. See:
+    echo   %LOG_FILE%
+    exit /b 1
+)
+exit /b 0
+
 :generate_embedded_example_asset
 call :log "Generating embedded example.jpg asset module."
 if not exist "%EMBEDDED_EXAMPLE_SOURCE%" (
@@ -416,10 +545,23 @@ if not exist "%EMBEDDED_EXAMPLE_MODULE_PATH%" (
     echo   %LOG_FILE%
     exit /b 1
 )
+python -c "import hashlib, importlib.util, os; from pathlib import Path; src=Path(os.environ['EMBEDDED_EXAMPLE_SOURCE']); mod_path=Path(os.environ['EMBEDDED_EXAMPLE_MODULE_PATH']); spec=importlib.util.spec_from_file_location('semi_embedded_example_asset_verify', mod_path); mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); src_bytes=src.read_bytes(); embedded_bytes=mod.get_example_jpg_bytes(); src_sha=hashlib.sha256(src_bytes).hexdigest(); embedded_sha=hashlib.sha256(embedded_bytes).hexdigest(); ok=(src_bytes == embedded_bytes and embedded_sha == src_sha and getattr(mod, 'EXAMPLE_JPG_SHA256', '') == src_sha and int(getattr(mod, 'EXAMPLE_JPG_SIZE', -1)) == len(src_bytes)); print(f'Embedded example asset verification: size={len(src_bytes)}, sha256={src_sha}, bytes_equal={src_bytes == embedded_bytes}'); raise SystemExit(0 if ok else 1)" >> "%LOG_FILE%" 2>&1
+if errorlevel 1 (
+    call :log "ERROR: Embedded example asset verification failed; decoded bytes differ from example.jpg."
+    echo ERROR: Embedded example asset verification failed. See:
+    echo   %LOG_FILE%
+    exit /b 1
+)
 exit /b 0
 
 :copy_runtime_resources
 call :log "Copying runtime resources to portable output."
+if exist "%ROOT_DIR%\LICENSE" (
+    copy /y "%ROOT_DIR%\LICENSE" "%APP_DIR%\" >> "%LOG_FILE%" 2>&1
+)
+if exist "%ROOT_DIR%\ThirdPartyNotices.txt" (
+    copy /y "%ROOT_DIR%\ThirdPartyNotices.txt" "%APP_DIR%\" >> "%LOG_FILE%" 2>&1
+)
 if exist "%ROOT_DIR%\*.ico" (
     for %%I in ("%ROOT_DIR%\*.ico") do copy /y "%%~fI" "%APP_DIR%\" >> "%LOG_FILE%" 2>&1
 )
