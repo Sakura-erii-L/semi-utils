@@ -1,0 +1,42 @@
+This software, SemiUtilsQt, uses the following third-party software and fonts. 
+Their licenses and terms are acknowledged below:
+
+1. PySide6 (Qt for Python)
+   - License: LGPLv3
+   - Notice: This software dynamically links to PySide6 and Qt6 libraries.
+   - Source: https://www.qt.io/qt-for-python
+
+2. ExifTool (by Phil Harvey)
+   - License: Artistic License / GPL
+   - Notice: Used for reading/writing image EXIF metadata.
+   - Source: https://exiftool.org/
+
+3. Pillow (PIL)
+   - License: HPND License
+   - Notice: Used for image processing and rendering.
+   - Source: https://python-pillow.org/
+
+4. ExifRead
+   - License: BSD 3-Clause License
+   - Notice: Python backend for reading EXIF metadata.
+   - Source: https://github.com/ianare/exif-py
+
+5. Roboto Font
+   - License: Apache License 2.0
+   - Notice: Used for text rendering in the GUI and image attributes.
+   - Source: https://fonts.google.com/specimen/Roboto
+
+6. tqdm
+   - License: MIT License / MPLv2
+   - Source: https://github.com/tqdm/tqdm
+
+7. PyYAML
+   - License: MIT License
+   - Source: https://pyyaml.org/
+
+8. Python
+   - License: Python Software Foundation License (PSF)
+   - Source: https://www.python.org/
+
+Other minor dependencies (certifi, python-dateutil, etc.) are distributed under their respective permissive licenses (MPL, BSD, Apache 2.0).
+Please refer to the site-packages or source repositories for full license texts.
